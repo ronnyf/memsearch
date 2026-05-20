@@ -12,6 +12,12 @@
 - `docs/superpowers/specs/2026-05-20-swift-rewrite-design.md` — the authoritative design spec; patches in Task 2 modify it directly.
 - `docs/superpowers/specs/2026-05-20-swift-rewrite-phasing.md` — Phase 0 section is the source of truth for spike criteria; section "Spec patches during phases" governs Task 2.
 
+**In-flight amendments (decided during execution):**
+- **Spike PASS/FAIL via Swift Testing.** Tasks 3–5's scratch packages are restructured from `executable + main.swift` (with `print "PASS:" / exit(1)` assertions) to `library + Tests/<Spike>Tests/` (with `@Test` + `#expect`). Same scope of validation; cleaner reports; aligns the spike infra with Phase 1+ test idiom. Run via `swift test`.
+- **sqlite-vec integration.** `asg017/sqlite-vec` ships no `Package.swift` (404 on contents, latest release `v0.1.9`). Spike 0a clones the upstream repo to `/tmp/memsearch-spikes/sqlite-vec-fork/`, adds a `Package.swift` wrapping the C source as a SwiftPM C target, and Spike 0a's `Package.swift` depends on the fork via `.package(path: "../sqlite-vec-fork")`. Phase 0 result note captures the integration approach; if the spike succeeds, Phase 1 either upstreams the Package.swift via PR or maintains a soft fork.
+
+The original prescriptive code blocks below predate these amendments. Treat them as the *intent*; the executed shape is captured in `docs/superpowers/spikes/2026-05-20-spike-0*.md` and `docs/superpowers/phases/phase-0-notes.md`.
+
 **Hardware prerequisites:**
 - A development Mac running **macOS 26** with Apple Intelligence enabled, signed in to an Apple ID with Apple Intelligence access. **Required for Task 4 (Spike 0c)** — non-skippable per the phasing doc. If the implementer's primary Mac is macOS 14/15, acquire a loaner or cloud runner before starting Phase 0.
 
