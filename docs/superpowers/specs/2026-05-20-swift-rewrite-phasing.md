@@ -71,15 +71,29 @@ Three throwaway experiments + spec patches. Code lives in
 ### Spec patches (apply to design spec before any spike runs)
 
 1. **Add `MemSearchError.unimplemented(String)` case.** Used by Phase 1 stubs
-   for `summarize`/`appendSummary`/`watch`. Public, `Sendable`, durable across
-   phases. Removed (or left as defensive default) at v1 ship time. Format:
+   for `summarize`/`appendSummary`/`watch`. Public, `Sendable`, **permanent
+   in the public enum** — kept as a defensive default for any future
+   protocol-level "not yet wired" surfaces. Format:
    `case unimplemented("summarize: implemented in Phase 6")`.
-2. **Add `LanguageModelSession.Error` mapping** to the `LLMError` mapping
-   table. `LanguageModelSession.Error.concurrentRequests` is the framework's
-   canonical "you broke the single-flight contract" signal — must not slip
-   through. Two catch clauses required in `callRespond`.
-3. **Update Platforms claim** to reflect iOS/visionOS as compile-only-validated
+2. **Add `LLMError.singleFlightViolation(any Error & Sendable)` case** and
+   map `LanguageModelSession.Error.concurrentRequests` to it (NOT to
+   `.modelFailure`). Concurrent-requests is the framework's canonical
+   "single-flight contract violated" signal; demoting it to a generic
+   `.modelFailure` would mask future regressions of the actor pattern.
+3. **Add `LanguageModelSession.Error` mapping** to the `LLMError` mapping
+   table. Two catch clauses required in `callRespond`.
+4. **Update HTTP cancellation pattern** in design spec's "Cancellation
+   granularity per embedder" table: catch `URLError` with code
+   `.cancelled` and **directly throw `CancellationError()`** —
+   unconditional translation, no `Task.checkCancellation()` middleman
+   (which would silently swallow non-Task-driven URL cancellations).
+5. **Update Platforms claim** to reflect iOS/visionOS as compile-only-validated
    in v1.
+6. **Add v1-status banner to SwiftUI integration appendix** noting iOS
+   runtime is deferred to v2.
+7. **Clarify Testing rule**: mocks MAY use `Task.sleep` to provide
+   cancellation latency; the *test assertion* must not depend on timing.
+   `MockEmbeddingProvider` gains a `latencyPerBatch: Duration?` field.
 
 ### Spike 0a — GRDB 7.x + sqlite-vec extension load + reader concurrency
 
@@ -162,11 +176,17 @@ and ships in Phase 6 — discovering it's wrong during Phase 6 is too late.
 2. Spawn 10 concurrent `Task`s each calling `actor.summarize(prompt:)`.
 3. Run 100 iterations.
 
-**Done criteria:** 1000 calls, **zero errors of any kind from
-FoundationModels** — catch `any Error` and inspect both
-`LanguageModelSession.GenerationError` and `LanguageModelSession.Error`
-case-by-case (the latter contains `.concurrentRequests`, the canonical
-single-flight violation signal).
+**Done criteria:**
+- (a) **No `LanguageModelSession.Error.concurrentRequests`** over 1000 calls
+  (10 concurrent × 100 iterations). Catch all `LanguageModelSession.Error`
+  cases AND `LanguageModelSession.GenerationError` cases — `concurrentRequests`
+  lives on the `Error` enum, not `GenerationError`.
+- (b) **Queue ordering / latency invariant**: record `(start, end)`
+  timestamps inside the actor's `summarize` per call. Assert request
+  completion order matches request initiation order, OR p99 wall-clock
+  latency under N=10 concurrent callers is within `T_serial × N × 1.2`.
+  The pattern's correctness claim is *single-flight serialization*; the
+  spike must observe that property, not just the absence of errors.
 
 **Failure mode → spec patch:** revise the single-flight pattern; consult
 Apple sample code; potentially switch to a different serialization
@@ -177,11 +197,20 @@ primitive.
 - `docs/superpowers/spikes/2026-05-20-spike-0a-sqlite-vec.md`
 - `docs/superpowers/spikes/2026-05-20-spike-0b-coreml-bge.md`
 - `docs/superpowers/spikes/2026-05-20-spike-0c-foundationmodels.md`
-- Spec patches committed to design spec
-- `docs/superpowers/spikes/index.md` summarizing all 3 results
+- **Pinned Python ground-truth fixture** at `tests/fixtures/python-baseline/`:
+  - `corpus/` — ~100 markdown files used as the comparison corpus.
+  - `queries.json` — 5–10 frozen sample queries.
+  - `python-top5.json` — Python `memsearch` top-5 results per query,
+    computed once and committed. Records: Python version, embedding
+    model name, embedder version, `pip freeze` snapshot.
+  - This fixture is referenced by Phase 1 (criterion 6) and Phase 5
+    (success criterion). Without it, Phase 1 ↔ Phase 5 measurements are
+    irreproducible.
+- Spec patches committed to design spec.
+- `docs/superpowers/spikes/index.md` summarizing all results + fixture.
 
-**Exit criterion:** all three spikes have a result note, and the design
-spec reflects any architectural pivots.
+**Exit criterion:** all three spikes have a result note, the fixture is
+pinned, and the design spec reflects any architectural pivots.
 
 ## Phase 1 — MVP (Library + minimal CLI)
 
@@ -248,17 +277,26 @@ effort estimate change — re-baseline before starting.
     underlying cause survives lifting).
   - **`URLError(.cancelled)` translation**: `OpenAIEmbedder.embed(_:)` under
     `Task.cancel()` throws `CancellationError`, not
-    `EmbeddingError.networkFailure`. Mocked URLSession.
+    `EmbeddingError.networkFailure`. Mocked URLSession. The embedder catches
+    `URLError` with `code == .cancelled` and **directly throws `CancellationError()`**
+    (do NOT route through `try Task.checkCancellation()` — that silently
+    swallows non-Task-driven URL cancellations).
   - **`index()` matches `indexStream()`**: assert `index()` returns the
     same `IndexStats` as a hand-reduce over `indexStream()` events.
   - **`indexStream()` cancellation propagation**: between-files
     `try Task.checkCancellation()` surfaces as `CancellationError` mid-
-    stream. Tested via `MockEmbeddingProvider` injecting a slow batch.
-  - **Actor-boundary Sendable smoke test**: construct
-    `MemSearch<MockVectorStore, MockEmbeddingProvider>` (actor-V,
-    final-class-E), exercise end-to-end `index()` + `search()`,
-    pass across a Task boundary. Compile-time check for
-    Sendable correctness.
+    stream. `MockEmbeddingProvider` injects latency via its
+    `latencyPerBatch: Duration` field; the test cancels mid-flight and
+    `#expect(throws: CancellationError.self)`.
+  - **Sendable compile gate** (separate from behavior tests): a one-line
+    `@Test func sendableCompileGate()` that captures
+    `MemSearch<MockVectorStore, MockEmbeddingProvider>` across a
+    `Task {}` boundary. Body does nothing else — the compile is the
+    assertion. Verifies the engine + actor-V composition is `Sendable`.
+  - **Engine round-trip with mocks** (separate behavior test): construct
+    `MemSearch<MockVectorStore, MockEmbeddingProvider>`, exercise
+    `index()` + `search()` end-to-end against canned mock data. Asserts
+    correctness, not Sendability.
   - **`SQLiteVectorStore.scan` end-to-end smoke test**: drain the stream
     against a real GRDB-backed store. Compile-validates the `@Sendable`
     capture in the GRDB-wrapping closure (this is the only consumer of
@@ -334,17 +372,25 @@ error-lifting + SQLite (5) + HTTP (3) + CLI (6).
 - **CLI dispatch:** 4 cases (2 stores × 2 embedders).
 - **Tests (TDD):**
   - CRUD.
-  - Cosine correctness against numpy reference values.
+  - **Cosine correctness against numpy reference values** — committed
+    fixture of (vector_a, vector_b, expected_cosine) tuples computed in
+    Python with explicit float64 → float32 cast, asserted to 6 decimal
+    places. This is the *only* correctness gate for the SwiftData
+    backend — pinning to numpy is the ground truth.
   - Manual ModelActor isolation under concurrent search.
+  - Sendable compile gate for `MemSearch<SwiftDataVectorStore, OpenAIEmbedder>`.
 - **Success:**
-  - (a) **SwiftData dense-only top-K overlaps SQLite *dense-only-mode*
-    top-K at ≥85%** on the same fixture (isolates cosine correctness;
-    requires SQLite to support a "dense-only" test mode with BM25 weight
-    = 0).
-  - (b) **SwiftData top-K vs SQLite hybrid top-K ≥50%** (acknowledges
-    algorithmic difference between hybrid and dense-only).
+  - SwiftData passes the numpy-anchored cosine test.
+  - SwiftData top-K against the pinned Python fixture
+    (`tests/fixtures/python-baseline/`) returns at least one of the
+    Python top-5 in its top-5 for each query (same anchor as Phase 5,
+    decoupled from SQLite).
   - Performance acceptable at 50k chunks.
-- **Note:** dense-only — no BM25; `score = denseScore`.
+- **Note:** dense-only — no BM25; `score = denseScore`. We do **not**
+  cross-validate against `SQLiteVectorStore` here — that would conflate
+  algorithmic difference (hybrid vs. dense-only) with cosine
+  correctness. Numpy + Python-baseline are independent ground-truth
+  sources.
 
 ## Phase 4 — Watcher (~1 wk)
 
@@ -359,10 +405,13 @@ error-lifting + SQLite (5) + HTTP (3) + CLI (6).
 - **Tests (TDD):**
   - Golden-path created/modified/deleted using `confirmation` over a
     tempdir.
-  - **Automated retain-cycle test**: hold a `weak var` to the watcher,
-    drop the stream consumer, poll via `confirmation` that the weak
-    reference becomes nil within 1 second. (Replaces the un-CI-able
-    Instruments check.)
+  - **Automated retain-cycle test** (using deinit instrumentation, NOT
+    polling): add a `package`-only "watcher deinitialized" hook — a
+    closure stored on `FileWatcher` invoked from `deinit`. Use
+    `confirmation { confirmed in ... drop the stream consumer ... await consumer.value }`
+    so `deinit`'s `confirmed()` call fires inside the closure body
+    before it returns. This matches `confirmation`'s real semantics
+    (event count) and avoids polling/timing assertions.
 - **Success:**
   - `memsearch watch` runs; mutations debounce → re-index.
   - Ctrl+C cleanly stops; no leaked fds (verified via `lsof` snapshot
@@ -420,13 +469,22 @@ enum mapping, atomic file ops, `dateStamp` capture, 16-branch CLI dispatch
   - `dateStamp` survives next-day-append (filename + header derive from
     `summary.dateStamp`, never wall clock).
   - Concurrent stress test on `FoundationModelsSummarizer`. **Catch all
-    framework errors**, not just `GenerationError`. CI-skipped on
-    runners without macOS 26 SDK.
+    framework errors**, not just `GenerationError`. **`#expect` zero
+    occurrences of `LLMError.singleFlightViolation`** specifically —
+    not just zero generic failures. CI-skipped on runners without
+    macOS 26 SDK.
 - **Success:**
   - `memsearch compact --source path.md --llm openai` writes daily
     memory log.
   - `--llm foundation-models` works on macOS 26.
-  - Stress test green on macOS 26 hardware.
+  - Stress test green on macOS 26 hardware (zero
+    `singleFlightViolation`).
+  - **iOS 26 SDK compile gate**: `xcodebuild build -destination 'generic/platform=iOS Simulator'`
+    against the iOS 26 SDK. Verifies `@available(iOS 26, *)` annotation,
+    `SystemLanguageModel.default` availability surface, and
+    `LanguageModelSession.Error.concurrentRequests` symbol exposure on iOS.
+    Runtime on iOS 26 not exercised in v1 (deferred per v2 backlog);
+    compile gate is non-negotiable.
 
 ## Phase 7 — Hardening + docs (~1 wk)
 
@@ -434,11 +492,23 @@ enum mapping, atomic file ops, `dateStamp` capture, 16-branch CLI dispatch
   - Integration tests (full index → search → compact → re-index).
   - Benchmarks (chunks/sec indexed, query p50/p99 latency).
   - README with Quick Start + SwiftUI integration.
-  - **CI matrix specification:** macOS + iOS compile-only. **Explicitly
-    spec the FoundationModels runtime test runner**: GitHub Actions'
-    macOS 26 runner availability is uncertain; if unavailable at CI
-    bring-up, gate via a self-hosted runner or scheduled nightly local
-    run with result reporting. Don't silently skip.
+  - **CI matrix** — per-module iOS support table:
+
+    | Module                      | iOS compile in v1 | Notes                                                                 |
+    | --------------------------- | ----------------- | --------------------------------------------------------------------- |
+    | `MemSearch`                 | required          | Foundation only.                                                      |
+    | `MemSearchSQLite`           | required          | GRDB iOS-supported. **sqlite-vec extension load on iOS** verified by Phase 0a addendum or Phase 1 entry-criterion. If iOS sandbox blocks `load_extension`, mark "best-effort" and add to v2 backlog. |
+    | `MemSearchSwiftData`        | required          | iOS-native.                                                           |
+    | `MemSearchEmbeddersHTTP`    | required          | URLSession.                                                           |
+    | `MemSearchEmbeddersCoreML`  | required          | swift-transformers iOS-shipped (verified via Spike 0b actor probe).   |
+    | `MemSearchEmbeddersONNX`    | best-effort       | Pending swift-onnxruntime iOS verification. If it doesn't compile in v1, mark explicitly and defer to v2. |
+    | `MemSearch-CLI` executable  | excluded          | macOS-only (TOML loader, env-var resolution, file paths).              |
+
+  - **FoundationModels runtime test runner specification:**
+    GitHub Actions' macOS 26 runner availability is uncertain; if
+    unavailable at CI bring-up, gate via a self-hosted runner or
+    scheduled nightly local run with result reporting. Don't silently
+    skip.
 - **Polish:**
   - `LocalizedError` strings reviewed.
   - Full env-var resolution in TOML loader.
@@ -448,6 +518,8 @@ enum mapping, atomic file ops, `dateStamp` capture, 16-branch CLI dispatch
   - README sufficient for a new contributor to integrate the library.
   - Benchmarks committed.
   - CI green; all phases' tests pass together.
+  - Per-module iOS compile matrix all green (except documented
+    "best-effort" / "excluded").
   - **Strict-concurrency contract validation note:** the
     `FoundationModelsSummarizer` actor's strict-concurrency contract is
     compile-validated on every CI runner that has the macOS 26 SDK,
@@ -461,8 +533,14 @@ Every phase ends with:
 
 1. `swift test` green.
 2. `swift build` green for every product.
-3. Commit, push.
-4. `docs/superpowers/phases/phase-N-notes.md` capturing surprises,
+3. **iOS Simulator compile gate**: `xcodebuild build -scheme <module> -destination 'generic/platform=iOS Simulator'`
+   green for every iOS-required module per the Phase 7 support matrix.
+   Failure indicates the phase introduced a macOS-only API call without
+   `#if os(macOS)` gating — fix in this phase, do not defer. Phase 4
+   (FSEvents/DispatchSource) and Phase 6 (FoundationModels iOS 26 SDK)
+   are the highest-risk phases for this gate.
+4. Commit, push.
+5. `docs/superpowers/phases/phase-N-notes.md` capturing surprises,
    spec deltas, deferred items.
 
 ### What we explicitly do NOT do during Phases 1–6
@@ -521,11 +599,47 @@ embed half-fixed reentrancy semantics.
 Spec is the single source of truth for design decisions; code is the
 single source of truth for behavior; they should match.
 
+## v2 iOS validation backlog (entry criteria)
+
+Before v2 declares iOS support runtime-validated, the team must exercise
+the following — concrete entry criteria for the v2 milestone, not "nice
+to have":
+
+1. **Security-scoped URL lifecycle**: `mem.search` / `mem.indexStream`
+   against a `UIDocumentPicker`-sourced URL, including the
+   URL-invalidation path (host fails to call
+   `startAccessingSecurityScopedResource` → engine surfaces a clean
+   error, not a crash).
+2. **`mem.watch()` on iOS DispatchSource path**: per-fd
+   `makeFileSystemObjectSource` registration works inside the app
+   sandbox. The design's "throws on iOS init failure" contract surfaces
+   correctly when security-scoped URLs are invalid. Cross-platform
+   retain-cycle test (the macOS FSEvents test does not cover the iOS
+   DispatchSource path).
+3. **`BGAppRefreshTask` re-index**: integration test of host calling
+   `mem.index()` from a `BGAppRefreshTask` handler — verifies async
+   cancellation, foreground re-entry, per-file idempotency on iOS.
+4. **Programmatic init + Keychain config**: `MemSearch` constructed with
+   paths from `containerURL()`, `OpenAIEmbedder` with key from Keychain.
+   Full index/search/compact cycle.
+5. **`FoundationModelsSummarizer` on iOS 26 device**: parity with macOS
+   26 stress test — same single-flight invariant, zero
+   `LLMError.singleFlightViolation`, queue-ordering / latency invariant.
+6. **Per-module iOS XCTest target**: every module marked "iOS required"
+   in the Phase 7 support matrix gets a `*Tests` target on
+   `iphonesimulator`.
+7. **`isExcludedFromBackupKey` round-trip**: assert the flag survives
+   on a real iOS sandbox container path (`Application Support` resolved
+   via `FileManager.url(for: .applicationSupportDirectory, ...)`).
+8. **SwiftUI integration appendix snippet**: the design spec's appendix
+   compiles against an iOS app target and runs end-to-end on simulator —
+   the v1-status banner can then be removed.
+
 ## After Phase 7
 
 - v1 release (tag, GitHub release).
-- v2 priorities decided based on real usage. iOS runtime validation is
-  the highest-priority v2 deliverable since v1 ships claiming iOS
-  support compile-only.
+- v2 priorities decided based on real usage. **iOS runtime validation
+  is the highest-priority v2 deliverable** — see the backlog above for
+  entry criteria.
 - Plugin client work (post-v1) is its own brainstorm → spec → plan
   cycle, separate from this rewrite.

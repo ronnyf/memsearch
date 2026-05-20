@@ -374,7 +374,7 @@ After all files: orphaned sources processed, each emitting
 
 | Embedder       | Cancellation point                                                                  |
 | -------------- | ----------------------------------------------------------------------------------- |
-| HTTP           | Per request — URLSession async honors `Task.cancel()`. The HTTP embedders catch `URLError(.cancelled)` and re-throw via `try Task.checkCancellation()` so callers see `CancellationError`, not a network failure. |
+| HTTP           | Per request — URLSession async honors `Task.cancel()`. The HTTP embedders catch `URLError` with `code == .cancelled` and **directly throw `CancellationError()`** — unconditional translation so callers see `CancellationError` regardless of whether the underlying URLSession cancel came from `Task.cancel()` or another path. Do NOT route through `try Task.checkCancellation()` (that would silently swallow non-Task-driven cancellations). |
 | Core ML / ONNX | Between batches — `MLModel.prediction` / `ORTSession.run` don't honor Swift cancellation. `try Task.checkCancellation()` is called between every batch. |
 
 ## Search
@@ -602,6 +602,10 @@ public enum LLMError: Error, Sendable {
     case networkFailure(any Error & Sendable)
     case invalidResponse
     case modelFailure(any Error & Sendable)
+    /// Receiving this case in production indicates a bug in `FoundationModelsSummarizer`'s
+    /// single-flight guard. The actor's `inFlight: Task<String, Error>?` chain is
+    /// supposed to prevent this from ever surfacing; tests `#expect` zero occurrences.
+    case singleFlightViolation(any Error & Sendable)
 }
 ```
 
@@ -616,9 +620,9 @@ public enum LLMError: Error, Sendable {
 | `.rateLimited(_)`                                | `.rateLimited(...)`        |
 | (everything else)                                | `.modelFailure(...)`        |
 
-| `LanguageModelSession.Error`                     | `LLMError`                |
-| ------------------------------------------------ | ------------------------- |
-| `.concurrentRequests`                            | `.modelFailure(...)`        |
+| `LanguageModelSession.Error`                     | `LLMError`                  |
+| ------------------------------------------------ | --------------------------- |
+| `.concurrentRequests`                            | `.singleFlightViolation(_)` |
 | (other cases)                                    | `.modelFailure(...)`        |
 
 `callRespond` should have **two catch clauses** (`catch let e as LanguageModelSession.GenerationError` and `catch let e as LanguageModelSession.Error`) so neither enum slips into a generic `catch` and loses its type information.
@@ -973,8 +977,14 @@ not as `MemSearchError.embedding(.networkFailure(...))`.
 ### Determinism
 
 ChunkID computation, chunker output, RRF scoring are pure — golden values.
-No timing-based assertions. Watcher tests use `confirmation` over a temp
-directory.
+
+**No timing-based assertions.** Watcher tests use `confirmation` over a temp
+directory. **Mocks may use `Task.sleep` to provide latency** that lets
+cancellation land at a known suspension point — the assertion remains
+`await #expect(throws: CancellationError.self) { try await task.value }`,
+not a `Task.sleep`-followed-by-deadline check. The mock sleeps; the test
+asserts behavior. Concretely, `MockEmbeddingProvider` exposes
+`latencyPerBatch: Duration?` so cancellation tests have a documented surface.
 
 All test targets compile under `swiftLanguageModes: [.v6]`.
 
@@ -1004,6 +1014,13 @@ Opt-in download via `preDownload(model:)`. Models live in
 `CoreMLEmbedder.init` is `async throws`.
 
 ## SwiftUI integration (host pattern)
+
+> **v1 status:** macOS-validated. iOS hosts can compile this pattern in v1,
+> but iOS-runtime behavior — particularly the watcher path (`mem.watch()`),
+> security-scoped URL handling around `mem.paths` and `appendSummary`'s
+> `outputDirectory`, and backgrounding interactions — is **deferred to v2**.
+> Expect to discover and report iOS-runtime issues. See the phasing doc's
+> "Deferred to v2" and "v2 iOS validation backlog" sections.
 
 Not part of the library; documented here so every host doesn't rediscover.
 
