@@ -586,6 +586,9 @@ public actor FoundationModelsSummarizer: LLMSummarizer {
         catch let e as LanguageModelSession.GenerationError {
             throw mapGenerationError(e)
         }
+        catch let e as LanguageModelSession.Error {
+            throw mapSessionError(e)
+        }
     }
 }
 ```
@@ -949,16 +952,28 @@ package final class MockEmbeddingProvider: EmbeddingProvider {
     package nonisolated let dimension: Int
 
     private let lock = OSAllocatedUnfairLock<State>(initialState: .init())
-    package struct State { var injectedFailures: [String: EmbeddingError] = [:] }
+    package struct State {
+        var injectedFailures: [String: EmbeddingError] = [:]
+        var latencyPerBatch: Duration? = nil
+    }
 
-    package init(dimension: Int = 8, injectedFailures: [String: EmbeddingError] = [:]) {
+    package init(dimension: Int = 8,
+                 injectedFailures: [String: EmbeddingError] = [:],
+                 latencyPerBatch: Duration? = nil) {
         self.dimension = dimension
-        lock.withLock { $0.injectedFailures = injectedFailures }
+        lock.withLock {
+            $0.injectedFailures = injectedFailures
+            $0.latencyPerBatch = latencyPerBatch
+        }
     }
 
     package func embed(_ texts: [String]) async throws -> [Embedding] {
         // Failure keyed on text content — deterministic regardless of arrival order.
-        let failures = lock.withLock { $0.injectedFailures }
+        // `latencyPerBatch` (if set) provides a documented suspension point so
+        // cancellation tests can land at a known point and surface as
+        // `CancellationError`, not as the injected failure.
+        let (failures, latency) = lock.withLock { ($0.injectedFailures, $0.latencyPerBatch) }
+        if let latency { try await Task.sleep(for: latency) }
         if let first = texts.first, let injected = failures[first] {
             throw injected
         }
