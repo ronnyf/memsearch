@@ -374,7 +374,7 @@ After all files: orphaned sources processed, each emitting
 
 | Embedder       | Cancellation point                                                                  |
 | -------------- | ----------------------------------------------------------------------------------- |
-| HTTP           | Per request — URLSession async honors `Task.cancel()`. The HTTP embedders catch `URLError` with `code == .cancelled` and **directly throw `CancellationError()`** — unconditional translation so callers see `CancellationError` regardless of whether the underlying URLSession cancel came from `Task.cancel()` or another path. Do NOT route through `try Task.checkCancellation()` (that would silently swallow non-Task-driven cancellations). |
+| HTTP           | Per request — URLSession async honors `Task.cancel()`. The HTTP embedders catch `URLError` with `code == .cancelled` and **first call `try Task.checkCancellation()`** (which throws `CancellationError` if the current task was cancelled), then re-throw the original URLError as `EmbeddingError.networkFailure(URLError)` if `checkCancellation()` did not throw. This distinguishes "task-driven cancellation → `CancellationError` (cooperative shutdown)" from rare "non-task-driven URL cancel → `networkFailure` (transient network issue, host may retry)." Both paths surface a non-`MemSearchError.embedding(.networkFailure)` for the cancellation case so consumers don't confuse them. |
 | Core ML / ONNX | Between batches — `MLModel.prediction` / `ORTSession.run` don't honor Swift cancellation. `try Task.checkCancellation()` is called between every batch. |
 
 ## Search
@@ -602,9 +602,14 @@ public enum LLMError: Error, Sendable {
     case networkFailure(any Error & Sendable)
     case invalidResponse
     case modelFailure(any Error & Sendable)
-    /// Receiving this case in production indicates a bug in `FoundationModelsSummarizer`'s
-    /// single-flight guard. The actor's `inFlight: Task<String, Error>?` chain is
-    /// supposed to prevent this from ever surfacing; tests `#expect` zero occurrences.
+    /// Indicates that a summarizer's single-flight guard was bypassed —
+    /// the underlying framework rejected an attempted concurrent request
+    /// that the actor's serialization was supposed to prevent. Receiving
+    /// this case in production indicates a bug in the summarizer actor
+    /// (e.g., `FoundationModelsSummarizer`'s `inFlight: Task<String, Error>?`
+    /// chain, or any future single-flight summarizer such as
+    /// `MLXLocalSummarizer`). Tests `#expect` zero occurrences for each
+    /// summarizer that uses single-flight serialization.
     case singleFlightViolation(any Error & Sendable)
 }
 ```
