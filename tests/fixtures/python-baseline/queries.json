@@ -1,0 +1,13 @@
+{
+  "queries": [
+    "How does the chunker split markdown by headings?",
+    "What is hybrid search and how does RRF combine retrievers?",
+    "Configure ONNX bge-m3 as the default embedder",
+    "Claude Code plugin memory recall skill",
+    "FTS5 BM25 with sqlite-vec",
+    "Composite chunk ID format",
+    "Watchdog file watcher debounce",
+    "compact command summarization"
+  ],
+  "topK": 5
+}
