@@ -423,7 +423,20 @@ public final class SQLiteVectorStore: VectorStore, Sendable {
     public init(url: URL, dimension: Int) async throws {
         var config = Configuration()
         config.prepareDatabase { db in
-            try db.execute(sql: "SELECT load_extension('vec0')")    // sqlite-vec
+            // Static-linked sqlite-vec. Each pool connection registers vec0
+            // by calling sqlite3_vec_init directly against the connection's
+            // sqlite3* handle — no `SELECT load_extension(…)` is required, so
+            // we don't depend on macOS system SQLite's extension-loading flag
+            // (and the iOS sandbox / load_extension question never arises).
+            var errMsg: UnsafeMutablePointer<CChar>?
+            let rc = sqlite3_vec_init(db.sqliteConnection, &errMsg, nil)
+            if rc != SQLITE_OK {
+                let msg = errMsg.flatMap { String(cString: $0) } ?? "sqlite3_vec_init failed"
+                if errMsg != nil { sqlite3_free(errMsg) }
+                throw VectorStoreError.connectionFailed(
+                    NSError(domain: "sqlite-vec", code: Int(rc),
+                            userInfo: [NSLocalizedDescriptionKey: msg]))
+            }
         }
         self.pool = try DatabasePool(path: url.path, configuration: config)
         self.dimension = dimension
@@ -449,7 +462,10 @@ delivers correct concurrency without an outer actor that would regress to
 single-execution.
 
 `Configuration.prepareDatabase` runs once per connection in the pool;
-`load_extension('vec0')` is the sqlite-vec API at runtime.
+the `sqlite3_vec_init` call registers the `vec0` virtual table and
+sqlite-vec functions on every reader and writer. (Requires
+`import SQLite3` for `SQLITE_OK` / `sqlite3_free`, plus `import SQLiteVec`
+for the static-linked `sqlite3_vec_init` symbol.)
 
 ### `MemSearchSwiftData` — manual ModelActor (no `@ModelActor` macro)
 
@@ -1108,8 +1124,13 @@ None blocking. Items deferred to implementation:
 
 - swift-toml vs swift-tomlkit — pick the one with cleaner Swift 6 Sendable
   conformances at impl time.
-- sqlite-vec distribution — SPM binary target if available; otherwise
-  prebuilt static lib via `linkerSettings`.
+- sqlite-vec distribution — **resolved (Spike 0a)**. Maintain a SwiftPM
+  wrapper that compiles upstream `asg017/sqlite-vec`'s `sqlite-vec.c` as
+  a C target with `-DSQLITE_CORE -DSQLITE_VEC_STATIC`; consumer calls
+  `sqlite3_vec_init` directly. Phase 1 decides whether the wrapper lives
+  as (a) a maintained public fork with the Package.swift upstreamed via
+  PR, or (b) a vendored copy under `Sources/SQLiteVec/` inside this repo.
+  Either way: source-link, no binary target, no runtime extension loading.
 - Default Core ML embedding model identifier — see Risks (BGE-M3 fallback).
 - 16-branch CLI compact dispatch — hand-written vs `@CLISubcommand` macro.
 - `AsyncThrowingStream<_, Failure>` typed Failure — narrow streams when
