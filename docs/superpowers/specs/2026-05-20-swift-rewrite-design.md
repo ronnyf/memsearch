@@ -43,9 +43,14 @@ Apple primitives where they're a better fit.
 
 ## Platforms
 
-- macOS 14+
-- iOS 17+
-- visionOS 1+
+- **macOS 14+** — fully tested in v1 (CLI + library).
+- **iOS 17+ / visionOS 1+** — *compile-only verified in v1; runtime untested.*
+  The library is designed and gated for these platforms (security-scoped
+  URLs, sandbox container paths, Keychain-sourced credentials, FoundationModels
+  iOS path), but actual iOS-runtime validation (XCTest on `iphonesimulator`,
+  real-device dogfooding) is **deferred to v2**. Hosts integrating on iOS in
+  v1 should expect to discover and report runtime issues. See the phasing doc
+  for the explicit per-phase iOS-validation deferral.
 
 `FoundationModelsSummarizer` requires macOS 26 / iOS 26 / visionOS 26 and an
 Apple Intelligence-capable device — gated behind `@available`. Explicitly
@@ -600,7 +605,9 @@ public enum LLMError: Error, Sendable {
 }
 ```
 
-Mapping table (`callRespond`'s catch):
+### Mapping tables
+
+`LanguageModelSession` exposes **two** error enums; both must be caught:
 
 | `LanguageModelSession.GenerationError`           | `LLMError`                |
 | ------------------------------------------------ | ------------------------- |
@@ -608,6 +615,13 @@ Mapping table (`callRespond`'s catch):
 | `.unsupportedLanguageOrLocale(_)`                | `.unsupportedLocale`      |
 | `.rateLimited(_)`                                | `.rateLimited(...)`        |
 | (everything else)                                | `.modelFailure(...)`        |
+
+| `LanguageModelSession.Error`                     | `LLMError`                |
+| ------------------------------------------------ | ------------------------- |
+| `.concurrentRequests`                            | `.modelFailure(...)`        |
+| (other cases)                                    | `.modelFailure(...)`        |
+
+`callRespond` should have **two catch clauses** (`catch let e as LanguageModelSession.GenerationError` and `catch let e as LanguageModelSession.Error`) so neither enum slips into a generic `catch` and loses its type information.
 
 ## File watcher
 
@@ -867,6 +881,9 @@ public enum MemSearchError: Error, Sendable {
     case chunking(URL, any Error & Sendable)
     case configurationInvalid(String)
     case noSummarizerConfigured
+    /// Surface declared in an earlier phase, implementation arrives in a later phase.
+    /// String identifies the missing capability and the phase that adds it.
+    case unimplemented(String)
 }
 
 public enum EmbeddingError: Error, Sendable {

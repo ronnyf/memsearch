@@ -1,6 +1,6 @@
 # MemSearch Swift 6 Rewrite — Phasing Strategy
 
-**Status:** draft (post-brainstorm)
+**Status:** draft (post-brainstorm, post-adversarial-review-loop-1)
 **Date:** 2026-05-20
 **Issue:** #1
 **Companion:** [`2026-05-20-swift-rewrite-design.md`](2026-05-20-swift-rewrite-design.md) — the design spec this phasing implements.
@@ -26,60 +26,102 @@ These decisions cut across every phase:
   lifting, GRDB transactions, FoundationModels single-flight, async actor
   init); test-after for trivial wiring (CLI flag plumbing, scanner
   enumeration, TOML loading).
-- **Risk-spike upfront:** Phase 0 runs three throwaway spikes (~½ day
-  each) on the highest-external-dep risks before Phase 1 starts.
+- **Risk-spike upfront:** Phase 0 runs three throwaway spikes on the
+  highest-external-dep risks before Phase 1 starts. **Spike 0c is hard-
+  required**, not skip-able — see Phase 0 below.
 - **Spec drift discipline:** if a phase reveals a spec error, fix the spec
   first (commit), then the implementation. Spec and code never diverge
-  silently.
+  silently. **In-flight concurrency-pattern patches:** if the spec change
+  invalidates a pattern already partly written, revert the impl to the
+  most recent green commit before applying the spec fix; restart from the
+  patched spec. Don't surgically patch concurrency code in place.
+- **Platform validation:** v1 fully validates **macOS 14+** at runtime.
+  iOS / visionOS are **compile-only** in v1; runtime validation deferred
+  to v2 (see "Deferred to v2"). Every phase's success criteria are macOS-
+  CLI-shaped intentionally; iOS-runtime issues will surface only when v2
+  brings up an iOS test target.
+- **SwiftUI appendix maintenance:** any phase that changes a `public`
+  engine method signature on `MemSearch` (`index`, `indexStream`, `search`,
+  `summarize`, `appendSummary`, `watch`) MUST update the design spec's
+  SwiftUI integration appendix in the same commit. Hosts copy-paste from
+  it; stale code there is its own bug.
 
 ## Phase map
 
 | Phase | Topic                              | Effort     | Outcome                                                           |
 | ----- | ---------------------------------- | ---------- | ----------------------------------------------------------------- |
-| 0     | Spikes                             | ~1.5 days  | External-dep risks validated; spec patched if needed              |
-| 1     | MVP — library + minimal CLI        | ~1.5–2 wk  | First dogfoodable: `memsearch index/search/info` against SQLite + OpenAI |
+| 0     | Spikes + spec patches              | ~2 days    | External-dep risks validated; spec patched (incl. `MemSearchError.unimplemented`) |
+| 1     | MVP — library + minimal CLI        | ~2 wk      | First dogfoodable: `memsearch index/search/info` against SQLite + OpenAI |
 | 2     | Core ML embedder                   | ~1 wk      | Offline embedding option; first-run model download lifecycle      |
 | 3     | SwiftData store                    | ~1 wk      | Second backend; brute-force cosine via Accelerate                  |
 | 4     | Watcher                            | ~1 wk      | `memsearch watch` running on macOS via FSEvents                    |
 | 5     | ONNX + Ollama embedders            | ~1 wk      | All four embedders interchangeable                                 |
-| 6     | Compact + summarizers              | ~1.5 wk    | OpenAI-compatible + FoundationModels; `summarize/appendSummary`    |
+| 6     | Compact + summarizers              | ~2 wk      | OpenAI-compatible + FoundationModels; `summarize/appendSummary`    |
 | 7     | Hardening + docs                   | ~1 wk      | Integration tests, benchmarks, README, CI matrix                   |
 
-Total: ~7–9 weeks single-developer FTE. Estimates are rough.
+Total: ~9–10 weeks single-developer FTE (loop-2 review surfaced Phase 1
+file-count + Phase 6 effort under-estimates; bumped accordingly).
 
-## Phase 0 — Spikes
+## Phase 0 — Spikes + spec patches
 
-Three throwaway experiments. Code lives in `/tmp/memsearch-spikes/`, NOT in
-the repo. Only result notes go to `docs/superpowers/spikes/`.
+Three throwaway experiments + spec patches. Code lives in
+`/tmp/memsearch-spikes/`, NOT in the repo. Only result notes go to
+`docs/superpowers/spikes/`.
 
-### Spike 0a — GRDB 7.x + sqlite-vec extension load
+### Spec patches (apply to design spec before any spike runs)
+
+1. **Add `MemSearchError.unimplemented(String)` case.** Used by Phase 1 stubs
+   for `summarize`/`appendSummary`/`watch`. Public, `Sendable`, durable across
+   phases. Removed (or left as defensive default) at v1 ship time. Format:
+   `case unimplemented("summarize: implemented in Phase 6")`.
+2. **Add `LanguageModelSession.Error` mapping** to the `LLMError` mapping
+   table. `LanguageModelSession.Error.concurrentRequests` is the framework's
+   canonical "you broke the single-flight contract" signal — must not slip
+   through. Two catch clauses required in `callRespond`.
+3. **Update Platforms claim** to reflect iOS/visionOS as compile-only-validated
+   in v1.
+
+### Spike 0a — GRDB 7.x + sqlite-vec extension load + reader concurrency
 
 **Risk:** macOS system SQLite ships with extension loading disabled by
-default. If GRDB uses system SQLite, `SELECT load_extension('vec0')`
-fails. The whole `MemSearchSQLite` design depends on this working.
+default. AND the design's `final class : Sendable` + `DatabasePool` choice
+depends on GRDB's reader concurrency working *with* sqlite-vec loaded.
 
 **Approach:**
 
-1. Minimal SwiftPM scratch package with `GRDB.swift 7.x` + `sqlite-vec`
-   deps.
+1. Minimal SwiftPM scratch package with `GRDB.swift 7.x` + `sqlite-vec`.
 2. `Configuration.prepareDatabase { db in try db.execute(sql:
    "SELECT load_extension('vec0')") }`.
 3. `CREATE VIRTUAL TABLE chunks USING vec0(embedding float[1024])`,
    INSERT one vector, run a KNN SELECT.
+4. **Concurrent-readers test:** 8 parallel `Task`s each calling a short
+   KNN SELECT. Verify (a) all return correct results, (b) wall-clock is
+   meaningfully sub-linear in N (i.e., readers actually parallelize).
 
-**Done when:** the KNN SELECT returns the inserted vector.
+**Done when:** the KNN SELECT returns the inserted vector AND the
+concurrent-readers test passes.
 
 **Failure mode → spec patch:**
 - (a) ship `SQLite3-static` SPM dep to bundle a permissive SQLite build,
   OR
 - (b) use GRDB's `SQLiteCustomBuild` mode, OR
 - (c) drop sqlite-vec, fall back to brute-force cosine over BLOB
-  embeddings (still hybrid via FTS5 + Swift cosine).
+  embeddings. **This invalidates Phase 1's deliverables** — the
+  `MemSearchSQLite` store would have no `vec0` virtual table; hybrid
+  search becomes "FTS5 + Swift cosine over BLOBs" rather than
+  "ANN + BM25 RRF". Phase 1's effort and file count would change.
+  Spec patch required before Phase 1 starts.
+- (d) reader concurrency fails — switch `SQLiteVectorStore` to an
+  `actor`. Spec patch.
 
-### Spike 0b — swift-transformers Core ML embedding model
+### Spike 0b — swift-transformers Core ML embedding model + actor init shape
 
 **Risk:** swift-transformers may not ship a usable Core ML BGE-M3
-package; we may need a different default.
+package; we may need a different default. AND the design's actor shape
+for `CoreMLEmbedder` (`nonisolated let dimension: Int` + `nonisolated let
+modelName: String` + `private let model/tokenizer` set inside `async throws
+init`) needs validation before Phase 1 commits to the protocol's
+`nonisolated var dimension: Int { get }` requirement.
 
 **Approach:**
 
@@ -88,93 +130,150 @@ package; we may need a different default.
    `.mlpackage`.
 3. Embed `"hello world"`, verify dimension matches docs.
 4. If BGE-M3 unavailable, repeat with `all-MiniLM-L6-v2`.
+5. **Actor-shape probe:** wrap (1)+(2) in a minimal
+   `actor TestEmbedder` with `nonisolated let dimension: Int` set in
+   `async throws init`. Call `someEmbedder.dimension` from a non-isolated
+   context. Verify it compiles and returns the expected value.
 
-**Done when:** any reasonable embedding model loads end-to-end.
+**Done when:** an embedding model loads end-to-end AND the actor probe
+compiles + reads `dimension` non-isolated.
 
-**Failure mode → spec patch:** pin the working model identifier in the
-Risks section; update Phase 2's deliverables.
+**Failure mode → spec patch:** pin the working model; if the actor-shape
+probe fails, fall back to `static func make(folder:) async throws ->
+Self` factory pattern (cascades into all CoreMLEmbedder construction
+sites).
 
-### Spike 0c — FoundationModels single-flight stress test
+### Spike 0c — FoundationModels single-flight stress test (HARD-REQUIRED)
 
 **Risk:** the spec's chained-Task pattern still races; or
-`LanguageModelSession` has constraints we missed. Requires macOS 26
-hardware.
+`LanguageModelSession` has constraints we missed.
+
+**This spike is no longer skip-able.** If macOS 26 hardware is unavailable,
+acquire it (loaner Mac, cloud runner, etc.) before Phase 0 completes. The
+spec's single-flight pattern is the riskiest concurrency primitive in v1
+and ships in Phase 6 — discovering it's wrong during Phase 6 is too late.
 
 **Approach:**
 
 1. Build a minimal `actor StressActor` with the spec's exact pattern
    (`inFlight: Task<String, Error>?`, spawn-then-assign,
-   `[weak self]` capture).
+   `[weak self]` capture, `SystemLanguageModel.default.isAvailable`
+   check, two-catch-clause error handling).
 2. Spawn 10 concurrent `Task`s each calling `actor.summarize(prompt:)`.
 3. Run 100 iterations.
 
-**Done when:** 1000 calls, zero `LanguageModelSession.GenerationError.*`
-related to concurrency.
+**Done criteria:** 1000 calls, **zero errors of any kind from
+FoundationModels** — catch `any Error` and inspect both
+`LanguageModelSession.GenerationError` and `LanguageModelSession.Error`
+case-by-case (the latter contains `.concurrentRequests`, the canonical
+single-flight violation signal).
 
-**Failure mode → spec patch:** revise the single-flight pattern;
-consult Apple sample code.
-
-**Skip if no macOS 26 hardware available** — defer to Phase 6 prep.
+**Failure mode → spec patch:** revise the single-flight pattern; consult
+Apple sample code; potentially switch to a different serialization
+primitive.
 
 ### Phase 0 deliverables
 
 - `docs/superpowers/spikes/2026-05-20-spike-0a-sqlite-vec.md`
 - `docs/superpowers/spikes/2026-05-20-spike-0b-coreml-bge.md`
 - `docs/superpowers/spikes/2026-05-20-spike-0c-foundationmodels.md`
-- Any spec patches required by spike findings
+- Spec patches committed to design spec
+- `docs/superpowers/spikes/index.md` summarizing all 3 results
 
-**Exit criterion:** all three spikes have a result note (or explicit
-skip), and the design spec reflects any architectural pivots.
+**Exit criterion:** all three spikes have a result note, and the design
+spec reflects any architectural pivots.
 
 ## Phase 1 — MVP (Library + minimal CLI)
 
 The first vertical slice. Proves the architecture end-to-end.
 
+**Spec dependency:** Phase 0a result. If Spike 0a's failure mode (c) was
+hit (drop sqlite-vec), Phase 1's `MemSearchSQLite` deliverables and
+effort estimate change — re-baseline before starting.
+
 ### Deliverables
 
 **`MemSearch` library:**
 
-- All public types (Models/, Errors/) with `LocalizedError` conformances.
+- All public types (Models/, Errors/) with `LocalizedError` conformances —
+  including `MemSearchError.unimplemented(String)` (added in Phase 0).
 - All three protocols (`VectorStore`, `EmbeddingProvider`,
   `LLMSummarizer` — last unused but declared).
 - `MemSearch<V, E>` engine with `init`, `index`, `indexStream`,
   `indexFile`, `search` implemented; `summarize` / `appendSummary` /
-  `watch` declared but throw `.unimplemented`.
+  `watch` declared but throw `.unimplemented("...: implemented in Phase N")`.
 - `Chunker` (heading-based, deterministic, matches Python).
 - `RRF.fuse` helper.
 - `Scanner` (FileManager.enumerator).
 - `Configuration` value types (TOML loading lives in CLI package).
-- Mocks: `MockEmbeddingProvider`, `MockVectorStore`, `MockSummarizer`
-  (package-visible, content-keyed failure injection).
+- Mocks: `MockEmbeddingProvider` (final class), `MockVectorStore`
+  (actor), `MockSummarizer` (struct) — package-visible, content-keyed
+  failure injection.
+- Error-lifting helper (private package).
 
 **`MemSearchSQLite` library:**
 
-- `SQLiteVectorStore` (final class : Sendable wrapping `DatabasePool`).
+- `SQLiteVectorStore` (final class : Sendable wrapping `DatabasePool`,
+  per Spike 0a outcome).
 - Schema + GRDB migrations.
 - sqlite-vec extension loading via `Configuration.prepareDatabase`.
 - FTS5 + bm25.
 - `hybridSearch` running both queries inside one `pool.read { db in ... }`.
+- `scan(filter:) -> AsyncThrowingStream<Chunk, any Error>` real impl.
 
 **`MemSearchEmbeddersHTTP` library:**
 
 - `OpenAIEmbedder` only (Ollama deferred to Phase 5).
 - `URLSession.shared` async API.
-- `URLError(.cancelled)` → `CancellationError` translation.
+- `URLError(.cancelled)` → `CancellationError` translation
+  (via `try Task.checkCancellation()` after catch).
 
 **`MemSearch-CLI` package:**
 
 - `swift-argument-parser` entry point.
 - Subcommands: `index`, `search`, `info`.
 - TOML config loader (basic; full env-var resolution can wait).
+- Programmatic init also supported (no TOML required) — the iOS path,
+  even though we don't validate it at runtime in v1.
 - Per-case dispatch — only 1 store × 1 embedder = 1 case in MVP.
 - JSON output for `search`.
 
 ### Tests
 
-- **TDD (red-green-refactor):** chunker (golden-file fixtures),
-  `RRF.fuse` math, `ChunkID` stability, error-lifting helper, SQLite
-  CRUD, `hybridSearch` single-tx invariant.
-- **Test-after:** Scanner, CLI flag plumbing, TOML loader.
+- **TDD (red-green-refactor):**
+  - Chunker (golden-file fixtures).
+  - `RRF.fuse` math.
+  - `ChunkID` stability.
+  - Error-lifting helper (per `MemSearchError` constructor — proves the
+    underlying cause survives lifting).
+  - **`URLError(.cancelled)` translation**: `OpenAIEmbedder.embed(_:)` under
+    `Task.cancel()` throws `CancellationError`, not
+    `EmbeddingError.networkFailure`. Mocked URLSession.
+  - **`index()` matches `indexStream()`**: assert `index()` returns the
+    same `IndexStats` as a hand-reduce over `indexStream()` events.
+  - **`indexStream()` cancellation propagation**: between-files
+    `try Task.checkCancellation()` surfaces as `CancellationError` mid-
+    stream. Tested via `MockEmbeddingProvider` injecting a slow batch.
+  - **Actor-boundary Sendable smoke test**: construct
+    `MemSearch<MockVectorStore, MockEmbeddingProvider>` (actor-V,
+    final-class-E), exercise end-to-end `index()` + `search()`,
+    pass across a Task boundary. Compile-time check for
+    Sendable correctness.
+  - **`SQLiteVectorStore.scan` end-to-end smoke test**: drain the stream
+    against a real GRDB-backed store. Compile-validates the `@Sendable`
+    capture in the GRDB-wrapping closure (this is the only consumer of
+    `scan` until Phase 6, so we proxy-validate it here).
+  - **SQLite CRUD** + **`hybridSearch` single-tx invariant** (lands
+    after schema scaffold; cannot TDD from cold start).
+
+- **Test-after:** Scanner, CLI flag plumbing, TOML loader, programmatic
+  init plumbing.
+
+**TDD ordering inside Phase 1:** chunker → RRF → ChunkID → error-lifting
+→ HTTP cancellation → engine reduce-invariant → engine cancellation →
+actor-boundary Sendable → SQLite schema + CRUD → hybridSearch single-tx
+→ scan smoke. Items after engine-reduce-invariant depend on prior
+infrastructure; running them out of order will spin.
 
 ### Success criteria
 
@@ -187,16 +286,22 @@ The first vertical slice. Proves the architecture end-to-end.
    new chunks.
 6. **Cross-check:** same fixture indexed by Python `memsearch`; for 5
    sample queries the Swift top-3 overlap with Python top-5 ≥ 60%.
+7. **Cancellation:** `URLError(.cancelled)` test surfaces
+   `CancellationError`, not `MemSearchError.embedding(.networkFailure)`.
 
 ### What we explicitly skip
 
 Core ML, SwiftData, watcher, other embedders, compact/summarizers,
 String Catalog localization, performance benchmarks, integration tests
-across phases.
+across phases, **iOS-runtime validation** (deferred to v2).
 
 ### Phase 1 effort
 
-~1.5–2 weeks single-developer; ~30 source files.
+~2 weeks single-developer; ~45–50 source files + ~12–15 test files.
+Loop-2 review revised the original 30-file estimate up; the deliverables
+list legitimately covers ~12 model types + 4 errors + 3 protocols + 4
+engine extensions + chunker/RRF/scanner/configuration + 3 mocks +
+error-lifting + SQLite (5) + HTTP (3) + CLI (6).
 
 ## Phase 2 — Core ML embedder (~1 wk)
 
@@ -205,39 +310,64 @@ across phases.
 - **Wire:** `preDownload(model:)` API; model dir at `Application
   Support/MemSearch/Models/` with `isExcludedFromBackupKey = true`.
 - **CLI dispatch:** 2 cases (1 store × 2 embedders).
-- **Tests (TDD):** dimension precondition, async model load, batch
-  correctness via deterministic golden vectors.
+- **Tests (TDD):**
+  - Dimension precondition.
+  - Async model load, batch correctness via deterministic golden vectors.
+  - **Per-batch cancellation**: `Task.cancel()` mid-`embed(_:)` causes
+    the next batch to throw `CancellationError`; previous batches'
+    results are not surfaced. (Compute embedders' cancellation contract
+    is per-batch only; document and enforce.)
+  - **Engine + actor-E Sendable assertion**: construct
+    `MemSearch<SQLiteVectorStore, CoreMLEmbedder>`, pass across a Task
+    boundary. Compile-time check.
 - **Success:** `memsearch index --embedder coreml` works offline; first
   run downloads, second run uses cache.
 - **Spec dependency:** Phase 0b spike result — default model identifier
-  is whatever 0b validated.
+  is whatever 0b validated. Actor init shape verified clean by 0b.
 
 ## Phase 3 — SwiftData store (~1 wk)
 
 - **Add:** `MemSearchSwiftData` with `actor SwiftDataVectorStore:
   ModelActor` (manual, no macro), `StoredChunkRecord` `@Model`,
-  brute-force cosine via `vDSP_dotpr`.
+  brute-force cosine via Accelerate. **`vDSP_dotpr` OR `vDSP.dot`** —
+  the implementer chooses; the spec doesn't over-constrain.
 - **CLI dispatch:** 4 cases (2 stores × 2 embedders).
-- **Tests (TDD):** CRUD, cosine correctness against numpy reference
-  values, manual ModelActor isolation under concurrent search.
-- **Success:** SwiftData backend's top hits semantically match SQLite's
-  on the same fixture (≥70% overlap). Performance acceptable at 50k
-  chunks.
+- **Tests (TDD):**
+  - CRUD.
+  - Cosine correctness against numpy reference values.
+  - Manual ModelActor isolation under concurrent search.
+- **Success:**
+  - (a) **SwiftData dense-only top-K overlaps SQLite *dense-only-mode*
+    top-K at ≥85%** on the same fixture (isolates cosine correctness;
+    requires SQLite to support a "dense-only" test mode with BM25 weight
+    = 0).
+  - (b) **SwiftData top-K vs SQLite hybrid top-K ≥50%** (acknowledges
+    algorithmic difference between hybrid and dense-only).
+  - Performance acceptable at 50k chunks.
 - **Note:** dense-only — no BM25; `score = denseScore`.
 
 ## Phase 4 — Watcher (~1 wk)
 
 - **Add:** `FileWatcher` actor with FSEvents (macOS,
-  `kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer`)
+  `kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer`
+  — flag names per Apple's CoreServices headers; see
+  https://developer.apple.com/documentation/coreservices/fseventstreamcreateflags)
   + DispatchSource (iOS) gated by `#if os()`. `MemSearch.watch()`
   throwing init returning `AsyncStream<IndexEvent>`. Debouncer.
 - **CLI:** `memsearch watch` subcommand prints `IndexEvent` JSON per
   line.
-- **Tests (TDD):** golden-path created/modified/deleted using
-  `confirmation` over a tempdir; Instruments-validated no-leak teardown.
-- **Success:** `memsearch watch` runs; mutations debounce → re-index;
-  Ctrl+C cleanly stops; no leaked fds; no retain cycle (`[weak watcher]`
-  in `onTermination`).
+- **Tests (TDD):**
+  - Golden-path created/modified/deleted using `confirmation` over a
+    tempdir.
+  - **Automated retain-cycle test**: hold a `weak var` to the watcher,
+    drop the stream consumer, poll via `confirmation` that the weak
+    reference becomes nil within 1 second. (Replaces the un-CI-able
+    Instruments check.)
+- **Success:**
+  - `memsearch watch` runs; mutations debounce → re-index.
+  - Ctrl+C cleanly stops; no leaked fds (verified via `lsof` snapshot
+    in test or release-checklist).
+  - Automated retain-cycle test passes.
 
 ## Phase 5 — ONNX + Ollama embedders (~1 wk)
 
@@ -245,43 +375,83 @@ across phases.
   `OllamaEmbedder` (final class) into `MemSearchEmbeddersHTTP`
   (auto-detects dimension via trial embed in async init).
 - **CLI dispatch:** 8 cases (2 × 4). Hand-written acceptable; macro
-  generation deferred to Phase 7 if it gets unwieldy.
-- **Tests (TDD):** ONNX model load + batch; Ollama trial-embed
-  dimension detection (mocked URLSession).
-- **Success:** all 4 embedders produce comparable top-K rankings on the
-  same fixture (≥70% overlap pairwise).
+  generation deferred to Phase 6/7 if it gets unwieldy.
+- **Tests (TDD):**
+  - ONNX model load + batch.
+  - **ONNX per-batch cancellation** (mirror of Phase 2 test).
+  - Ollama trial-embed dimension detection (mocked URLSession).
+  - **Regression: existing `OpenAIEmbedder` strict-concurrency tests
+    pass unchanged** after refactoring shared HTTP utilities. If shared
+    helpers are introduced, declare them `@Sendable` (closures) or
+    `Sendable`-conforming (types) at the point of extraction.
+- **Success:**
+  - All 4 embedders produce non-empty top-K results without crashing
+    on a normal fixture.
+  - Each embedder's top-3 contains at least one of the
+    Python-`memsearch` top-5 results (anchored to ground truth, not to
+    other embedders — different model families have legitimate
+    cross-model variance).
 
-## Phase 6 — Compact + summarizers (~1.5 wk)
+## Phase 6 — Compact + summarizers (~2 wk)
 
+Loop-2 review bumped this from 1.5 to 2 wk. Scope: 2 summarizers, two-error-
+enum mapping, atomic file ops, `dateStamp` capture, 16-branch CLI dispatch
+(consider macro generation), concurrent stress test.
+
+- **Pre-step:** if Spike 0c was somehow not run during Phase 0 (it should
+  have been — it's hard-required), run it now using the same criterion
+  before any other Phase 6 work begins.
 - **Add:** `OpenAICompatibleSummarizer` (final class).
   `FoundationModelsSummarizer` actor with the spec's corrected
   single-flight pattern (Spike 0c validated). `LanguageModelSession.GenerationError`
-  → `LLMError` mapping per spec.
+  AND `LanguageModelSession.Error` → `LLMError` mapping per spec
+  (two catch clauses).
 - **Engine:** `summarize(...) -> CompactedSummary` (with `dateStamp:
   Date`) + `appendSummary(_:to:)` (atomic temp-file + rename).
 - **CLI:** `memsearch compact` with `--llm`, `--source`, `--preview`
   flags. `--preview` prints summary without writing.
-- **CLI dispatch:** 16 cases (2 × 4 × 2). Strongly consider macro
-  generation now.
-- **Tests (TDD):** end-to-end summarize + appendSummary + re-index;
-  `dateStamp` survives next-day-append; concurrent stress test on
-  `FoundationModelsSummarizer` (CI-skipped on < macOS 26).
-- **Success:** `memsearch compact --source path.md --llm openai` writes
-  daily memory log; same with `--llm foundation-models` works on macOS
-  26.
+- **CLI dispatch:** 16 cases (2 × 4 × 2 with `#available` gating on the
+  FoundationModels-using arms). Strongly consider macro generation now.
+  If a macro is built, treat it as a sub-deliverable in this phase
+  (SwiftSyntax dep, MacroPlugin target setup, expansion testing — real
+  work).
+- **Tests (TDD):**
+  - End-to-end summarize + appendSummary + re-index.
+  - `dateStamp` survives next-day-append (filename + header derive from
+    `summary.dateStamp`, never wall clock).
+  - Concurrent stress test on `FoundationModelsSummarizer`. **Catch all
+    framework errors**, not just `GenerationError`. CI-skipped on
+    runners without macOS 26 SDK.
+- **Success:**
+  - `memsearch compact --source path.md --llm openai` writes daily
+    memory log.
+  - `--llm foundation-models` works on macOS 26.
+  - Stress test green on macOS 26 hardware.
 
 ## Phase 7 — Hardening + docs (~1 wk)
 
-- **Add:** integration tests (full index → search → compact → re-index);
-  benchmarks (chunks/sec indexed, query p50/p99 latency); README with
-  Quick Start + SwiftUI integration; CI matrix (macOS + iOS
-  compile-only).
-- **Polish:** `LocalizedError` strings reviewed; full env-var resolution
-  in TOML loader; macro-based CLI dispatch if hand-written hit pain
-  points; LICENSE / CONTRIBUTING if missing.
-- **Success:** README sufficient for a new contributor to integrate the
-  library; benchmarks committed; CI green; all phases' tests pass
-  together.
+- **Add:**
+  - Integration tests (full index → search → compact → re-index).
+  - Benchmarks (chunks/sec indexed, query p50/p99 latency).
+  - README with Quick Start + SwiftUI integration.
+  - **CI matrix specification:** macOS + iOS compile-only. **Explicitly
+    spec the FoundationModels runtime test runner**: GitHub Actions'
+    macOS 26 runner availability is uncertain; if unavailable at CI
+    bring-up, gate via a self-hosted runner or scheduled nightly local
+    run with result reporting. Don't silently skip.
+- **Polish:**
+  - `LocalizedError` strings reviewed.
+  - Full env-var resolution in TOML loader.
+  - Macro-based CLI dispatch if hand-written hit pain points.
+  - LICENSE / CONTRIBUTING if missing.
+- **Success:**
+  - README sufficient for a new contributor to integrate the library.
+  - Benchmarks committed.
+  - CI green; all phases' tests pass together.
+  - **Strict-concurrency contract validation note:** the
+    `FoundationModelsSummarizer` actor's strict-concurrency contract is
+    compile-validated on every CI runner that has the macOS 26 SDK,
+    independent of the runtime stress test. Document this distinction.
 
 ## Cross-cutting concerns
 
@@ -300,11 +470,15 @@ Every phase ends with:
 - Add features beyond the spec.
 - Style refactors of code we didn't touch.
 - Build SwiftUI host apps.
+- Build iOS test targets (deferred to v2).
 - Write OpenClaw / OpenCode / Codex plugin replacements (post-v1).
 - Premature performance optimization (real numbers come from Phase 7
   benchmarks).
 
 ### Deferred to v2
+
+Reconciled against the design spec's "Out of scope (v1, may revisit)" and
+"Non-goals" sections. v2 work picked up post-v1:
 
 - Cross-encoder reranker.
 - BM25 inside SwiftData backend.
@@ -314,21 +488,44 @@ Every phase ends with:
 - Plugin clients (Claude Code, OpenCode, Codex, OpenClaw).
 - watchOS / tvOS support.
 - TOML String Catalog localization.
+- **iOS / visionOS runtime validation** — XCTest on `iphonesimulator`,
+  per-phase iOS test gates, dogfood iOS app target. v1 ships
+  compile-only-validated; v2 brings up the iOS test surface.
+- **SwiftUI `@Observable` view-model wrapper** as a first-party module
+  (the design spec's appendix shows the pattern; a sibling
+  `MemSearchUI` module is a v2 add).
+- **Read-only / remote `VectorStore` backends** — re-introduce the
+  role-protocol split (`VectorIndex` / `VectorMutator` /
+  `VectorIntrospection`) when there's a real consumer. v1 keeps the
+  composite protocol.
+- **`AsyncThrowingStream<_, Failure>` typed Failure narrowing** — when
+  Swift 6.1 is the toolchain floor, narrow the streams (`scan`,
+  `indexStream`) from `any Error` to typed errors.
 
 ### Spec patches during phases
 
 If a phase reveals a spec error:
 
 1. Fix the spec first; commit with `docs: spec patch — <reason>`.
-2. Then update the implementation.
+2. Update the SwiftUI integration appendix in the same commit if the
+   change touches a `public` engine method signature.
+3. Then update the implementation.
 
-Never let spec and code diverge silently. Spec is the single source of
-truth for design decisions; code is the single source of truth for
-behavior; they should match.
+**In-flight concurrency-pattern patches:** if the spec change
+invalidates a pattern already partly written (e.g., Spike 0c reveals a
+race in the chained-Task pattern mid-Phase-6), revert the implementation
+to the most recent green commit before applying the spec fix. Don't try
+to surgically patch concurrency code in place — partial corrections
+embed half-fixed reentrancy semantics.
+
+Spec is the single source of truth for design decisions; code is the
+single source of truth for behavior; they should match.
 
 ## After Phase 7
 
 - v1 release (tag, GitHub release).
-- Decide on v2 priorities based on real usage.
+- v2 priorities decided based on real usage. iOS runtime validation is
+  the highest-priority v2 deliverable since v1 ships claiming iOS
+  support compile-only.
 - Plugin client work (post-v1) is its own brainstorm → spec → plan
   cycle, separate from this rewrite.
