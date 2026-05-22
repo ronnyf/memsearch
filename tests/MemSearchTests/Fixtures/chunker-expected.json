@@ -1,0 +1,72 @@
+[
+  {
+    "content": "This is a small preamble before the first heading.\nIt has two short lines, well above the meaningful-content threshold.",
+    "contentHash": "12f9b1de9d29e197",
+    "endLine": 3,
+    "heading": "",
+    "headingLevel": 0,
+    "id": "0f91babc0144552b",
+    "source": "chunker-input.md",
+    "startLine": 1
+  },
+  {
+    "content": "# Top-Level Title\n\nShort body for the top-level section.",
+    "contentHash": "ff499dc9ef71899d",
+    "endLine": 7,
+    "heading": "Top-Level Title",
+    "headingLevel": 1,
+    "id": "58a57588019763b2",
+    "source": "chunker-input.md",
+    "startLine": 4
+  },
+  {
+    "content": "## Section With Comment\n\n<!-- internal note: drop me from embedding only -->\nBody text after a stripped comment. Still meaningful.",
+    "contentHash": "f50a81cf936a9b25",
+    "endLine": 14,
+    "heading": "Section With Comment",
+    "headingLevel": 2,
+    "id": "ffb60966ae60bf33",
+    "source": "chunker-input.md",
+    "startLine": 10
+  },
+  {
+    "content": "## Large Paragraph Section\n\nParagraph one is a deliberately long block of prose intended to push the\nrunning buffer past the configured maximum chunk size of 1500 characters.\nIt rambles on at length about chunking, paragraph boundaries, and the way\nthe splitter prefers a clean blank-line break before falling back to a\nforced line-boundary split. We pad with filler so the byte count grows\npredictably across renderings: alpha bravo charlie delta echo foxtrot\ngolf hotel india juliet kilo lima mike november oscar papa quebec romeo\nsierra tango uniform victor whiskey xray yankee zulu. The phonetic\nalphabet adds entropy without changing semantics, which keeps the test\ndeterministic while still mirroring realistic prose. Continuing further:\nthe chunker should detect that this paragraph alone is below the limit\nyet, when combined with the next paragraph, it crosses the threshold\nexactly at the blank-line break \u2014 which is the boundary the algorithm\nprefers above all others. A nice test of the paragraph-priority path.\n\nParagraph two carries on the same idea but with different filler so the\nSHA-256 of the resulting chunk is distinct from paragraph one's hash.\nWe add more phonetic words to push past 1500 chars total: alpha bravo\ncharlie delta echo foxtrot golf hotel india juliet kilo lima mike\nnovember oscar papa quebec romeo sierra tango uniform victor whiskey\nxray yankee zulu, and once more for good measure: alpha bravo charlie",
+    "contentHash": "42dccf87011c81d1",
+    "endLine": 37,
+    "heading": "Large Paragraph Section",
+    "headingLevel": 2,
+    "id": "a11626ce1b65b110",
+    "source": "chunker-input.md",
+    "startLine": 15
+  },
+  {
+    "content": "november oscar papa quebec romeo sierra tango uniform victor whiskey\nxray yankee zulu, and once more for good measure: alpha bravo charlie\ndelta echo foxtrot golf hotel india juliet kilo lima mike november\noscar papa quebec romeo sierra tango. The combined section now exceeds\nthe chunk size, forcing the splitter into action.\n\nParagraph three is a short closer that should ride the overlap window.",
+    "contentHash": "c8e38efc25f9fcb4",
+    "endLine": 43,
+    "heading": "Large Paragraph Section",
+    "headingLevel": 2,
+    "id": "64241d7a6f2bd544",
+    "source": "chunker-input.md",
+    "startLine": 36
+  },
+  {
+    "content": "### Nested Subsection\n\nBody of a level-three heading. Helps verify nested levels track properly.",
+    "contentHash": "7e30637ed0b5c46a",
+    "endLine": 47,
+    "heading": "Nested Subsection",
+    "headingLevel": 3,
+    "id": "840e7fb59b2ca2c8",
+    "source": "chunker-input.md",
+    "startLine": 44
+  },
+  {
+    "content": "## Closing Section\n\nFinal body. Single line, well under the threshold.",
+    "contentHash": "d0a7ef1b61bfcbb8",
+    "endLine": 51,
+    "heading": "Closing Section",
+    "headingLevel": 2,
+    "id": "dcc9a32ed81d2321",
+    "source": "chunker-input.md",
+    "startLine": 48
+  }
+]

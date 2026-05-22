@@ -58,6 +58,7 @@ let package = Package(
         .testTarget(
             name: "MemSearchTests",
             dependencies: ["MemSearch"],
+            resources: [.copy("Fixtures")],
             swiftSettings: phase1Settings
         ),
         .testTarget(
