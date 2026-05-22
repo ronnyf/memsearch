@@ -29,6 +29,17 @@
   - SchemaMigrationTests: per-test directory captures WAL sidecars; new vec0 round-trip test proves module is loaded; new index/trigger existence test.
   - Sources/MemSearchSQLite/_Module.swift deleted (redundant once real sources exist).
 
+- **Post-Task-22 adversarial review fixes** (followup to commit `1202ce7`):
+  - `hybridSearch` now honors `q.filter` (was silently ignored). Filter pushdown applied to both vec0 KNN and FTS5 BM25 subqueries via `chunks_meta.source LIKE ? ESCAPE '\\'`. MockVectorStore.hybridSearch updated to filter likewise.
+  - `scan(filter:)` and `hybridSearch` LIKE patterns now use `ESCAPE '\\'` with `%` and `_` escaped via `escapeForLike(...)` helper. Real-world paths containing `_` (e.g. `my_notes/`) no longer false-match.
+  - FTS5 query sanitization: `q.queryText` wrapped as a quoted phrase via `toFTS5Phrase(...)` so reserved chars (`"`, `*`, `(`, `:`, etc.) don't trigger FTS5 parser errors.
+  - `scan(filter:)` `onTermination` now bridges consumer cancellation to `CancellationError` (matches `MemSearch.indexStream` Task 16 fix). Regression test added.
+  - `delete(ids:)` and `delete(source:)` simplified to single batch DELETE on `chunks_meta`; `chunks_meta_ad_vec` trigger handles `chunks_vec` cleanup. Returns `db.changesCount`.
+  - Cooperative `Task.checkCancellation()` added to `upsert` per-record loop.
+  - `nonisolated` dropped from `scan(filter:)` (redundant on Sendable class).
+  - Dead `catch let e as VectorStoreError` clauses removed in `upsert`, `summary`.
+  - Tests added: scan consumer-cancel; hybridSearch filter behavior. Sources/MemSearchSQLite/SQLiteVectorStore.swift force-unwrap on summary documented.
+
 ## Items deferred to later phases
 
 (filled during Phase 1)

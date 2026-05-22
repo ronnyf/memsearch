@@ -31,15 +31,22 @@ package actor MockVectorStore: VectorStore {
     package func hybridSearch(_ q: HybridQuery) async throws -> [SearchHit] {
         if let canned = cannedHits { return canned }
         // Fallback: dense-cosine over in-memory records, no BM25.
+        // Mirror SQLiteVectorStore: honor `q.filter` so engine-level tests
+        // against the mock catch filter regressions in the real backend.
         let qVec = q.queryEmbedding.values
-        let scored: [SearchHit] = records.values.map { rec in
-            let v = rec.embedding.values
-            let dot = zip(qVec, v).map(*).reduce(0, +)
-            let nq = sqrt(qVec.map { $0 * $0 }.reduce(0, +))
-            let nv = sqrt(v.map { $0 * $0 }.reduce(0, +))
-            let cos = (nq > 0 && nv > 0) ? dot / (nq * nv) : 0
-            return SearchHit(chunk: rec.chunk, score: cos, denseScore: cos, bm25Score: nil)
-        }
+        let scored: [SearchHit] = records.values
+            .filter { rec in
+                guard let f = q.filter else { return true }
+                return rec.chunk.source.path.hasPrefix(f.prefix.path)
+            }
+            .map { rec in
+                let v = rec.embedding.values
+                let dot = zip(qVec, v).map(*).reduce(0, +)
+                let nq = sqrt(qVec.map { $0 * $0 }.reduce(0, +))
+                let nv = sqrt(v.map { $0 * $0 }.reduce(0, +))
+                let cos = (nq > 0 && nv > 0) ? dot / (nq * nv) : 0
+                return SearchHit(chunk: rec.chunk, score: cos, denseScore: cos, bm25Score: nil)
+            }
         return Array(scored.sorted(by: { $0.score > $1.score }).prefix(q.topK))
     }
 

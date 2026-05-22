@@ -37,3 +37,19 @@ extension Chunk {
 func embeddingBlob(_ values: [Float]) -> Data {
     values.withUnsafeBufferPointer { Data(buffer: $0) }
 }
+
+/// Escapes the SQL LIKE meta-characters `\`, `%`, `_` with a leading backslash
+/// so the caller can pair the bound parameter with `LIKE ? ESCAPE '\\'` and
+/// have those characters treated as literals. Required because real-world
+/// source paths contain `_` (e.g. `my_notes/`) and would otherwise false-match
+/// any single character. Defined `package`-visible so both the row-streaming
+/// scan and hybrid-search filter pushdown share one implementation.
+package func escapeForLike(_ s: String) -> String {
+    var out = ""
+    out.reserveCapacity(s.count)
+    for ch in s {
+        if ch == "\\" || ch == "%" || ch == "_" { out.append("\\") }
+        out.append(ch)
+    }
+    return out
+}

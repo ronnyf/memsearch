@@ -68,4 +68,59 @@ struct HybridSearchTests {
         #expect(hits[0].bm25Score != nil)
         #expect(hits[0].score >= 0 && hits[0].score <= 1)
     }
+
+    /// Regression guard: `q.filter` must be honored by both the dense KNN
+    /// and the FTS5 BM25 subqueries. Two chunks share identical content +
+    /// embedding; only one matches the source-prefix filter. The filtered
+    /// chunk must not appear in the result set. Without filter pushdown,
+    /// both rankings would surface both chunks and RRF would fuse them
+    /// indiscriminately.
+    @Test("hybridSearch with filter excludes chunks outside the prefix")
+    func filtersBySourcePrefix() async throws {
+        let dir = try Self.makeTempDir(prefix: "hs-filter")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try await SQLiteVectorStore(
+            url: dir.appendingPathComponent("memsearch.db"),
+            dimension: 8
+        )
+
+        let cIn = Chunk(
+            id: ChunkID("in"),
+            source: URL(fileURLWithPath: "/notes/a/1.md"),
+            heading: "h",
+            headingLevel: 1,
+            startLine: 1,
+            endLine: 1,
+            content: "hello world",
+            contentHash: ChunkID.contentHash(for: "hello world")
+        )
+        let cOut = Chunk(
+            id: ChunkID("out"),
+            source: URL(fileURLWithPath: "/other/b/1.md"),
+            heading: "h",
+            headingLevel: 1,
+            startLine: 1,
+            endLine: 1,
+            content: "hello world",
+            contentHash: ChunkID.contentHash(for: "hello world")
+        )
+        var v = [Float](repeating: 0, count: 8); v[0] = 1
+        let e = try Embedding(values: v, expectedDimension: 8)
+        _ = try await store.upsert([
+            StoredChunk(chunk: cIn, embedding: e),
+            StoredChunk(chunk: cOut, embedding: e),
+        ])
+
+        let hits = try await store.hybridSearch(HybridQuery(
+            queryText: "hello world",
+            queryEmbedding: try Embedding(values: v, expectedDimension: 8),
+            topK: 10,
+            filter: SourceFilter(prefix: URL(fileURLWithPath: "/notes")),
+            rrfK: 60
+        ))
+
+        let ids = Set(hits.map(\.chunk.id))
+        #expect(ids.contains(ChunkID("in")), "expected the matching-prefix chunk")
+        #expect(!ids.contains(ChunkID("out")), "expected the non-matching chunk to be filtered out")
+    }
 }

@@ -16,7 +16,7 @@ struct SummarySnapshotTests {
         return dir
     }
 
-    @Test("counts (sources, chunks) inside one read transaction")
+    @Test("counts (sources, chunks) match inserted data")
     func counts() async throws {
         let dir = try Self.makeTempDir(prefix: "summary")
         defer { try? FileManager.default.removeItem(at: dir) }

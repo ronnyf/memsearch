@@ -20,6 +20,17 @@ extension SQLiteVectorStore {
     /// means a better match. `ORDER BY score ASC` therefore yields the best
     /// matches first. The raw scores are forwarded into `bm25Score` for the
     /// caller; RRF only consumes the ranking order, not the score values.
+    ///
+    /// **`q.filter` pushdown.** Both subqueries push the source-prefix filter
+    /// into SQL via `chunks_meta.source LIKE ? ESCAPE '\\'` so the candidate
+    /// rankings are constrained before RRF — without this, RRF would fuse
+    /// out-of-prefix candidates and the filter would silently no-op.
+    /// `escapeForLike(...)` neutralises `_` / `%` / `\` in real-world paths.
+    ///
+    /// **FTS5 query sanitization.** `q.queryText` is wrapped as a quoted FTS5
+    /// phrase via `toFTS5Phrase(...)` so reserved characters (`"`, `*`, `(`,
+    /// `:`, `^`, `-`, `OR`, etc.) become literal phrase content rather than
+    /// FTS5 operators that would either change recall or produce parse errors.
     public func hybridSearch(_ q: HybridQuery) async throws -> [SearchHit] {
         guard q.queryEmbedding.dimension == dimension else {
             throw VectorStoreError.dimensionMismatch(
@@ -34,6 +45,7 @@ extension SQLiteVectorStore {
                 // small-topK queries.
                 let candidates = max(q.topK * 5, 50)
                 let qBlob = embeddingBlob(q.queryEmbedding.values)
+                let likePattern = q.filter.map { escapeForLike($0.prefix.path) + "%" }
 
                 // Dense KNN. vec0's `xBestIndex` only recognises the KNN
                 // query plan when MATCH + ORDER BY distance + LIMIT all sit
@@ -41,33 +53,77 @@ extension SQLiteVectorStore {
                 // the same SELECT moves the LIMIT outside vec0's reach and
                 // produces "A LIMIT or 'k = ?' constraint is required on
                 // vec0 knn queries". Wrap the vec0 read in a subquery and
-                // JOIN to chunks_meta over the result.
-                let denseRows = try Row.fetchAll(db, sql: """
-                    SELECT chunks_meta.chunk_id AS cid, v.dist AS dist
-                    FROM (
-                        SELECT rowid, distance AS dist
-                        FROM chunks_vec
-                        WHERE embedding MATCH ?
-                        ORDER BY distance
-                        LIMIT ?
-                    ) AS v
-                    JOIN chunks_meta ON chunks_meta.rowid = v.rowid
-                    ORDER BY v.dist
-                """, arguments: [qBlob, candidates])
+                // JOIN to chunks_meta over the result. Filter pushdown
+                // happens on the JOINed `chunks_meta.source` (after the KNN
+                // candidate set has been pulled), so out-of-prefix
+                // candidates are dropped before RRF sees them. The inner
+                // subquery already orders by `distance ASC LIMIT ?`, so the
+                // outer ORDER BY is unnecessary.
+                let denseSQL: String
+                let denseArgs: StatementArguments
+                if let pattern = likePattern {
+                    denseSQL = """
+                        SELECT m.chunk_id AS cid, v.dist AS dist
+                        FROM (
+                            SELECT rowid, distance AS dist
+                            FROM chunks_vec
+                            WHERE embedding MATCH ?
+                            ORDER BY distance
+                            LIMIT ?
+                        ) AS v
+                        JOIN chunks_meta AS m ON m.rowid = v.rowid
+                        WHERE m.source LIKE ? ESCAPE '\\'
+                    """
+                    denseArgs = [qBlob, candidates, pattern]
+                } else {
+                    denseSQL = """
+                        SELECT m.chunk_id AS cid, v.dist AS dist
+                        FROM (
+                            SELECT rowid, distance AS dist
+                            FROM chunks_vec
+                            WHERE embedding MATCH ?
+                            ORDER BY distance
+                            LIMIT ?
+                        ) AS v
+                        JOIN chunks_meta AS m ON m.rowid = v.rowid
+                    """
+                    denseArgs = [qBlob, candidates]
+                }
+                let denseRows = try Row.fetchAll(db, sql: denseSQL, arguments: denseArgs)
                 let denseRanking: [(ChunkID, Float)] = denseRows.map {
                     (ChunkID($0["cid"] as String), Float($0["dist"] as Double))
                 }
 
                 // BM25 lexical. `bm25(chunks_fts)` returns negative scores;
-                // ascending order = best-match first.
-                let ftsRows = try Row.fetchAll(db, sql: """
-                    SELECT chunks_meta.chunk_id AS cid, bm25(chunks_fts) AS score
-                    FROM chunks_fts
-                    JOIN chunks_meta ON chunks_meta.rowid = chunks_fts.rowid
-                    WHERE chunks_fts MATCH ?
-                    ORDER BY score
-                    LIMIT ?
-                """, arguments: [q.queryText, candidates])
+                // ascending order = best-match first. Filter pushdown via
+                // the JOINed `chunks_meta.source`, same shape as the dense
+                // subquery above.
+                let ftsPhrase = toFTS5Phrase(q.queryText)
+                let ftsSQL: String
+                let ftsArgs: StatementArguments
+                if let pattern = likePattern {
+                    ftsSQL = """
+                        SELECT chunks_meta.chunk_id AS cid, bm25(chunks_fts) AS score
+                        FROM chunks_fts
+                        JOIN chunks_meta ON chunks_meta.rowid = chunks_fts.rowid
+                        WHERE chunks_fts MATCH ?
+                          AND chunks_meta.source LIKE ? ESCAPE '\\'
+                        ORDER BY score
+                        LIMIT ?
+                    """
+                    ftsArgs = [ftsPhrase, pattern, candidates]
+                } else {
+                    ftsSQL = """
+                        SELECT chunks_meta.chunk_id AS cid, bm25(chunks_fts) AS score
+                        FROM chunks_fts
+                        JOIN chunks_meta ON chunks_meta.rowid = chunks_fts.rowid
+                        WHERE chunks_fts MATCH ?
+                        ORDER BY score
+                        LIMIT ?
+                    """
+                    ftsArgs = [ftsPhrase, candidates]
+                }
+                let ftsRows = try Row.fetchAll(db, sql: ftsSQL, arguments: ftsArgs)
                 let ftsRanking: [(ChunkID, Float)] = ftsRows.map {
                     (ChunkID($0["cid"] as String), Float($0["score"] as Double))
                 }
@@ -115,4 +171,14 @@ extension SQLiteVectorStore {
             throw VectorStoreError.backendError(error)
         }
     }
+}
+
+/// Wraps a free-form user query as a quoted FTS5 phrase so reserved tokens
+/// (`"`, `*`, `(`, `)`, `:`, `^`, `-`, bare `OR`, etc.) become literal phrase
+/// content rather than FTS5 operators. Internal `"` is doubled per FTS5
+/// quoting rules. Without this, queries like `f(x):` or `OR` hit
+/// `fts5: syntax error near ...` at runtime.
+private func toFTS5Phrase(_ q: String) -> String {
+    let escaped = q.replacingOccurrences(of: "\"", with: "\"\"")
+    return "\"\(escaped)\""
 }

@@ -75,6 +75,7 @@ extension SQLiteVectorStore {
         do {
             return try await pool.write { db in
                 for r in records {
+                    try Task.checkCancellation()
                     try db.execute(sql: """
                         INSERT OR REPLACE INTO chunks_meta(
                             chunk_id, source, heading, heading_level,
@@ -102,8 +103,6 @@ extension SQLiteVectorStore {
                 }
                 return records.count
             }
-        } catch let e as VectorStoreError {
-            throw e
         } catch {
             throw VectorStoreError.backendError(error)
         }
@@ -113,29 +112,17 @@ extension SQLiteVectorStore {
         guard !ids.isEmpty else { return 0 }
         do {
             return try await pool.write { db in
-                var n = 0
-                for id in ids {
-                    if let r: Int64 = try Int64.fetchOne(
-                        db,
-                        sql: "SELECT rowid FROM chunks_meta WHERE chunk_id = ?",
-                        arguments: [id.rawValue]
-                    ) {
-                        // Explicit chunks_vec DELETE before chunks_meta DELETE
-                        // is intentional: the trigger would handle it, but
-                        // doing it explicitly keeps single-source-of-truth at
-                        // this layer if a future schema change reorders things.
-                        try db.execute(
-                            sql: "DELETE FROM chunks_vec WHERE rowid = ?",
-                            arguments: [r]
-                        )
-                        try db.execute(
-                            sql: "DELETE FROM chunks_meta WHERE chunk_id = ?",
-                            arguments: [id.rawValue]
-                        )
-                        n += 1
-                    }
-                }
-                return n
+                // Single batch DELETE on chunks_meta. The `chunks_meta_ad_vec`
+                // AFTER DELETE trigger (Task 19/20 fix) propagates each row
+                // delete to chunks_vec, so we don't iterate or fetch rowids
+                // here. `db.changesCount` reports the row count touched by
+                // the most recent statement on this connection.
+                let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+                try db.execute(
+                    sql: "DELETE FROM chunks_meta WHERE chunk_id IN (\(placeholders))",
+                    arguments: StatementArguments(ids.map(\.rawValue))
+                )
+                return db.changesCount
             }
         } catch {
             throw VectorStoreError.backendError(error)
@@ -145,22 +132,13 @@ extension SQLiteVectorStore {
     public func delete(source: URL) async throws -> Int {
         do {
             return try await pool.write { db in
-                let rowids: [Int64] = try Int64.fetchAll(
-                    db,
-                    sql: "SELECT rowid FROM chunks_meta WHERE source = ?",
-                    arguments: [source.path]
-                )
-                for r in rowids {
-                    try db.execute(
-                        sql: "DELETE FROM chunks_vec WHERE rowid = ?",
-                        arguments: [r]
-                    )
-                }
+                // Trigger `chunks_meta_ad_vec` cleans chunks_vec; no manual
+                // rowid fetch needed.
                 try db.execute(
                     sql: "DELETE FROM chunks_meta WHERE source = ?",
                     arguments: [source.path]
                 )
-                return rowids.count
+                return db.changesCount
             }
         } catch {
             throw VectorStoreError.backendError(error)
@@ -200,21 +178,38 @@ extension SQLiteVectorStore {
 
     /// Streams every chunk matching the optional source-prefix filter.
     ///
-    /// `nonisolated` so stream construction does not require an actor hop —
-    /// callers receive the stream synchronously. The body uses
-    /// `Task { [pool] in ... }` capturing `pool` directly (avoiding `self`
-    /// capture) so the closure remains `@Sendable` without leaking the store.
+    /// The body uses `Task { [pool] in ... }` capturing `pool` directly
+    /// (avoiding `self` capture) so the closure remains `@Sendable` without
+    /// leaking the store. (No `nonisolated` modifier — the class is
+    /// `Sendable` and methods are nonisolated by default; matches the
+    /// protocol's plain `func scan(filter:)` declaration.)
     ///
     /// Cancellation is observed at two points: once before issuing
     /// `pool.read` (GRDB's await only surfaces cancellation when it returns,
     /// which on a slow query is too late), and once per yielded row so a
     /// consumer that walks away mid-stream stops doing work promptly.
+    /// `onTermination` additionally bridges *consumer* cancellation
+    /// (caller-task cancel mid-iteration) into a `CancellationError` so the
+    /// for-try-await loop surfaces it — without the bridge, the iterator
+    /// returns nil on consumer cancel and the loop exits silently. Same
+    /// pattern as `MemSearch.indexStream` (Task 16 fix).
     ///
     /// **Sendable boundary.** `Row` conformance to `Sendable` is explicitly
     /// `unavailable` in GRDB 7.x; mapping `Row` → `Chunk` happens inside the
     /// `pool.read` closure so only `[Chunk]` (Sendable) crosses the actor
     /// boundary. Same pattern as `SQLiteHybridSearch`.
-    public nonisolated func scan(filter: SourceFilter?) -> AsyncThrowingStream<Chunk, any Error> {
+    ///
+    /// **Filter LIKE escaping.** The `f.prefix.path` value is wrapped via
+    /// `escapeForLike(...)` so `_` / `%` / `\` in real-world paths
+    /// (e.g. `my_notes/`) are treated as literals under `ESCAPE '\\'`.
+    ///
+    /// **Materialization.** This implementation materializes the full
+    /// result set inside `pool.read` before yielding row-by-row to the
+    /// consumer. Memory profile scales linearly with the number of
+    /// matching rows × per-Chunk size. Acceptable for v1 memsearch sizes
+    /// (<100k chunks); future iterations may switch to `Row.fetchCursor`
+    /// for true row-streaming if memory becomes a constraint.
+    public func scan(filter: SourceFilter?) -> AsyncThrowingStream<Chunk, any Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [pool] in
                 do {
@@ -222,10 +217,11 @@ extension SQLiteVectorStore {
                     let chunks: [Chunk] = try await pool.read { db in
                         let rows: [Row]
                         if let f = filter {
+                            let pattern = escapeForLike(f.prefix.path) + "%"
                             rows = try Row.fetchAll(
                                 db,
-                                sql: "SELECT * FROM chunks_meta WHERE source LIKE ? ORDER BY chunk_id",
-                                arguments: [f.prefix.path + "%"]
+                                sql: "SELECT * FROM chunks_meta WHERE source LIKE ? ESCAPE '\\' ORDER BY chunk_id",
+                                arguments: [pattern]
                             )
                         } else {
                             rows = try Row.fetchAll(
@@ -244,7 +240,16 @@ extension SQLiteVectorStore {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { reason in
+                task.cancel()
+                // Bridge consumer-cancellation onto the stream so for-try-await
+                // surfaces CancellationError. AsyncThrowingStream.Iterator.next()
+                // returns nil on consumer cancel, doesn't throw. Same pattern
+                // as MemSearch.indexStream (Task 16 fix).
+                if case .cancelled = reason {
+                    continuation.finish(throwing: CancellationError())
+                }
+            }
         }
     }
 
@@ -255,6 +260,10 @@ extension SQLiteVectorStore {
     public func summary() async throws -> EngineSummary {
         do {
             return try await pool.read { db in
+                // COUNT-only SELECT against a real table always returns
+                // exactly one row, so the force-unwrap is safe. Documenting
+                // the SQL semantic in-line is cleaner than a defensive
+                // throw-path that can never fire.
                 let row = try Row.fetchOne(db, sql: """
                     SELECT COUNT(DISTINCT source) AS sources, COUNT(*) AS chunks
                     FROM chunks_meta
@@ -264,8 +273,6 @@ extension SQLiteVectorStore {
                     chunkCount:  row["chunks"]  as Int
                 )
             }
-        } catch let e as VectorStoreError {
-            throw e
         } catch {
             throw VectorStoreError.backendError(error)
         }
