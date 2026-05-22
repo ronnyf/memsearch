@@ -51,7 +51,20 @@ extension MemSearch {
                     continuation.finish(throwing: MemSearchEngineErrors.lift(error))
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { reason in
+                task.cancel()
+                // `AsyncThrowingStream.Iterator.next()` returns `nil` (graceful
+                // end) when the *consumer's* task is cancelled — the for-loop
+                // would silently exit and `task.value` would not throw. Bridge
+                // consumer-cancellation onto the stream so the iteration
+                // surfaces as `CancellationError`, satisfying spec line 949
+                // ("Swift.CancellationError flows through public methods
+                // unchanged"). Idempotent: a second `finish(throwing:)` is a
+                // no-op if the producer task already finished the stream.
+                if case .cancelled = reason {
+                    continuation.finish(throwing: CancellationError())
+                }
+            }
         }
     }
 
