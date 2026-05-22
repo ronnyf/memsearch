@@ -47,6 +47,11 @@
   - Count-mismatch postcondition test added — catches contract violations where server returns fewer embeddings than requested.
   - Cooperative `Task.checkCancellation()` added at top of `embed(_:)` to catch pre-network cancellation.
 
+- **Task 27 — CLI executable target renamed** `memsearch` → `MemSearchCLI`:
+  - APFS is case-insensitive: SwiftPM's executable target named `memsearch` (lowercase) emits a `memsearch.swiftmodule` that collides with the imported library's `MemSearch.swiftmodule` once `-enable-testing` is on. The plan's `@testable import memsearch` (Tasks 27 + 29) failed under `swift test --filter` with `unable to resolve module dependency: 'memsearch'` and `cannot load module 'memsearch' as 'MemSearch'`.
+  - Fix: `cli/Package.swift` now declares an explicit `.executable(name: "memsearch", targets: ["MemSearchCLI"])` product. The executable target name is `MemSearchCLI` (Swift module name, distinct from `MemSearch`); the user-facing binary stays `memsearch`. Source path pinned to existing `Sources/memsearch/` via `path:` to avoid a directory rename.
+  - Test imports updated: `@testable import MemSearchCLI`. Tasks 29 + 31 plan templates that use `@testable import memsearch` will need the same swap.
+
 ## Items deferred to later phases
 
 (filled during Phase 1)
