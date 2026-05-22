@@ -17,6 +17,17 @@
 - **`phase1Settings` declaration order in `Package.swift`** (followup to commit `31835e1`): hoisted above the `Package(...)` initializer. The plan and original commit declared it after, causing `swift package dump-package` to emit `"settings": []` for every Swift target — `ApproachableConcurrency` was silently disabled. Fix verified with `swift package dump-package | jq '.targets[] | .settings'` showing one swift setting per target. Plan source patched in the same commit.
 - **`VectorStore.summary() async throws -> EngineSummary`** (Task 8): added to the protocol per the plan's Step 1 callout. Doc comment cites the loop-2 review finding (engine-level N+1 raced concurrent indexStream calls). Spec source patched in `2026-05-20-swift-rewrite-design.md` in the same commit. SQLite impl in Task 22; mock impl in Task 9.
 - **`RRFTests.twoRetrievers` tolerance** (Task 11, commit `1223f06`): plan asserted `< 1e-3` with comment "both at max." Math says otherwise — input `[[a,b],[b,a]]` puts each item at rank 1 in one retriever and rank 2 in the other (not rank 1 in both), so neither hits the theoretical max. Raw `= 1/61 + 1/62 ≈ 0.03252`; norm `= raw / (2/61) ≈ 0.9919`; `|norm - 1.0| ≈ 0.0081`, within `1e-2` not `1e-3`. Test tolerance loosened to `1e-2` and the comment now shows the math. RRF.fuse implementation itself is verbatim from plan and matches Python `store.py:209`.
+- **Task 19 adversarial review fixes** (followup to commit `527ab4a`):
+  - `chunks_vec` declared `distance_metric=cosine` (sqlite-vec defaults to L2; semantic search needs cosine).
+  - `chunks_meta_ad_vec` AFTER DELETE trigger on `chunks_meta` propagates row deletes to `chunks_vec` (prevents vec0 orphans from `INSERT OR REPLACE` cycle on the chunks_meta TEXT primary key).
+  - FTS5 `content_rowid='rowid'` dropped (default behavior; unidiomatic per GRDB FTS5 generator).
+  - `SQLiteSchema.migrate(...)` no longer `async` (body is fully synchronous; misleading on the boundary).
+  - `SQLiteVectorStore.init` adds `precondition(dimension > 0)` defense.
+  - `close()` now calls `try? pool.close()` (was a no-op relying on dealloc).
+  - NSError domain reverse-DNS: `com.memsearch.SQLiteVec` (was `sqlite-vec`).
+  - `VectorStoreError.unimplemented(String)` case added to remove vocabulary mismatch between SQLiteVectorStore+Stubs.swift (was MemSearchError.unimplemented) and the eventual real impls (which throw VectorStoreError).
+  - SchemaMigrationTests: per-test directory captures WAL sidecars; new vec0 round-trip test proves module is loaded; new index/trigger existence test.
+  - Sources/MemSearchSQLite/_Module.swift deleted (redundant once real sources exist).
 
 ## Items deferred to later phases
 

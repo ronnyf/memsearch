@@ -2668,15 +2668,16 @@ public final class SQLiteVectorStore: VectorStore, Sendable {
     package let pool: DatabasePool
 
     public init(url: URL, dimension: Int) async throws {
+        precondition(dimension > 0, "SQLiteVectorStore dimension must be > 0")
         var config = Configuration()
         config.prepareDatabase { db in
             var errMsg: UnsafeMutablePointer<CChar>?
             let rc = sqlite3_vec_init(db.sqliteConnection, &errMsg, nil)
             guard rc == SQLITE_OK else {
                 let msg = errMsg.flatMap { String(cString: $0) } ?? "sqlite3_vec_init failed (rc=\(rc))"
-                if errMsg != nil { sqlite3_free(errMsg) }
+                sqlite3_free(errMsg)  // sqlite3_free(NULL) is documented as a no-op.
                 throw VectorStoreError.connectionFailed(
-                    NSError(domain: "sqlite-vec", code: Int(rc),
+                    NSError(domain: "com.memsearch.SQLiteVec", code: Int(rc),
                             userInfo: [NSLocalizedDescriptionKey: msg])
                 )
             }
@@ -2687,10 +2688,15 @@ public final class SQLiteVectorStore: VectorStore, Sendable {
             throw VectorStoreError.connectionFailed(error)
         }
         self.dimension = dimension
-        try await SQLiteSchema.migrate(pool: pool, dimension: dimension)
+        try SQLiteSchema.migrate(pool: pool, dimension: dimension)
     }
 
-    public func close() async { /* GRDB closes on dealloc */ }
+    public func close() async {
+        // The protocol's `close()` is non-throwing; swallow GRDB errors silently.
+        // GRDB's DatabasePool.close() drains the writer + reader pool and is the
+        // only path to deterministic teardown (vs. dealloc-time cleanup).
+        try? pool.close()
+    }
 }
 ```
 
@@ -2702,7 +2708,7 @@ import GRDB
 import MemSearch
 
 enum SQLiteSchema {
-    static func migrate(pool: DatabasePool, dimension: Int) async throws {
+    static func migrate(pool: DatabasePool, dimension: Int) throws {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
             try db.execute(sql: """
@@ -2718,46 +2724,32 @@ enum SQLiteSchema {
                 );
             """)
             try db.execute(sql: "CREATE INDEX idx_chunks_meta_source ON chunks_meta(source);")
-            try db.execute(sql: "CREATE VIRTUAL TABLE chunks_vec USING vec0(embedding float[\(dimension)]);")
+            // distance_metric=cosine: sqlite-vec defaults to L2; semantic search needs cosine.
+            try db.execute(sql: "CREATE VIRTUAL TABLE chunks_vec USING vec0(embedding float[\(dimension)] distance_metric=cosine);")
             try db.execute(sql: """
                 CREATE VIRTUAL TABLE chunks_fts USING fts5(
-                    content, content='chunks_meta', content_rowid='rowid', tokenize='porter unicode61'
+                    content, content='chunks_meta', tokenize='porter unicode61'
                 );
             """)
             try db.execute(sql: "CREATE TRIGGER chunks_meta_ai AFTER INSERT ON chunks_meta BEGIN INSERT INTO chunks_fts(rowid,content) VALUES (new.rowid,new.content); END;")
             try db.execute(sql: "CREATE TRIGGER chunks_meta_ad AFTER DELETE ON chunks_meta BEGIN INSERT INTO chunks_fts(chunks_fts,rowid,content) VALUES ('delete',old.rowid,old.content); END;")
             try db.execute(sql: "CREATE TRIGGER chunks_meta_au AFTER UPDATE ON chunks_meta BEGIN INSERT INTO chunks_fts(chunks_fts,rowid,content) VALUES ('delete',old.rowid,old.content); INSERT INTO chunks_fts(rowid,content) VALUES (new.rowid,new.content); END;")
+            // Orphan-prevention: Task 20's `INSERT OR REPLACE INTO chunks_meta`
+            // fires DELETE+INSERT and allocates a fresh rowid for the TEXT-PK row,
+            // so old rowids in chunks_vec must be cleaned up to avoid unbounded growth.
+            try db.execute(sql: """
+                CREATE TRIGGER chunks_meta_ad_vec AFTER DELETE ON chunks_meta BEGIN
+                    DELETE FROM chunks_vec WHERE rowid = old.rowid;
+                END;
+            """)
         }
-        do { try await pool.write { db in try migrator.migrate(db) } }
+        do { try migrator.migrate(pool) }
         catch { throw VectorStoreError.connectionFailed(error) }
     }
 }
 ```
 
-- [ ] **Step 3: Test schema**
-
-```swift
-import Foundation
-import Testing
-import GRDB
-@testable import MemSearchSQLite
-
-@Suite("SQLite schema migration")
-struct SchemaMigrationTests {
-    @Test("init creates the expected virtual tables")
-    func tables() async throws {
-        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("schema-\(UUID().uuidString).db")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let store = try await SQLiteVectorStore(url: url, dimension: 8)
-        let names: [String] = try await store.pool.read { db in
-            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name")
-        }
-        #expect(names.contains("chunks_meta"))
-        #expect(names.contains("chunks_vec"))
-        #expect(names.contains("chunks_fts"))
-    }
-}
-```
+- [ ] **Step 3: Test schema** — see `tests/MemSearchSQLiteTests/SchemaMigrationTests.swift`. Three tests: (1) the renamed `tables()` checks `chunks_meta` / `chunks_vec` / `chunks_fts` exist; (2) `vec0RoundTrip()` does a direct `INSERT INTO chunks_vec` + `MATCH` to prove the vec0 module is loaded; (3) `indexesAndTriggers()` checks `idx_chunks_meta_source` + all four FTS5 triggers + the new `chunks_meta_ad_vec` orphan-prevention trigger exist. Each test creates a per-test directory so WAL sidecars (`*.db-wal`, `*.db-shm`) are cleaned up.
 
 - [ ] **Step 4: Cleanup + commit**
 

@@ -49,6 +49,7 @@ extension VectorStoreError: LocalizedError {
         case .schemaIncompatible(let r):          "Vector store schema incompatible: \(r)"
         case .dimensionMismatch(let exp, let g):  "Vector store dimension mismatch (expected \(exp), got \(g))"
         case .backendError(let e):                "Vector store backend error: \(describe(e))"
+        case .unimplemented(let m):               "Vector store not implemented: \(m)"
         }
     }
 }
