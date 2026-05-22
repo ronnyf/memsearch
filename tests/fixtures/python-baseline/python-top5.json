@@ -1,0 +1,364 @@
+{
+  "results": [
+    {
+      "query": "How does the chunker split markdown by headings?",
+      "top": [
+        {
+          "chunk_id": "d571b954887ec69c",
+          "end_line": 88,
+          "heading": "Heading-Based Chunking",
+          "score": 0.9919354412704706,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 84
+        },
+        {
+          "chunk_id": "e07d48872076f7a9",
+          "end_line": 66,
+          "heading": "Ingest Flow",
+          "score": 0.9765624720603228,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 55
+        },
+        {
+          "chunk_id": "fead9a43a4bc8799",
+          "end_line": 83,
+          "heading": "Chunking Strategy",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 80
+        },
+        {
+          "chunk_id": "1a1be645ee4028c1",
+          "end_line": 54,
+          "heading": "Core Library (`src/memsearch/`)",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/AGENT.md",
+          "start_line": 44
+        },
+        {
+          "chunk_id": "261b8c08467aeff7",
+          "end_line": 109,
+          "heading": "Paragraph-Based Splitting for Large Sections",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 106
+        }
+      ]
+    },
+    {
+      "query": "What is hybrid search and how does RRF combine retrievers?",
+      "top": [
+        {
+          "chunk_id": "fb9c3c5b207c6838",
+          "end_line": 54,
+          "heading": "Search Flow",
+          "score": 0.9838709384202957,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 40
+        },
+        {
+          "chunk_id": "abc9ac45bf2712db",
+          "end_line": 379,
+          "heading": "Notes",
+          "score": 0.9692307133227587,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_cli.md",
+          "start_line": 372
+        },
+        {
+          "chunk_id": "9b62e4fe90d401e6",
+          "end_line": 131,
+          "heading": "Why Hybrid Search Matters",
+          "score": 0.9682540241628885,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_opencode_memory-tools.md",
+          "start_line": 122
+        },
+        {
+          "chunk_id": "6d494ae29663ed83",
+          "end_line": 84,
+          "heading": "Hybrid Search for Quality",
+          "score": 0.9457932412624359,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_design-philosophy.md",
+          "start_line": 73
+        },
+        {
+          "chunk_id": "e7791cf7ce0c4774",
+          "end_line": 184,
+          "heading": "Hybrid Search",
+          "score": 0.49999997206032276,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 175
+        }
+      ]
+    },
+    {
+      "query": "Configure ONNX bge-m3 as the default embedder",
+      "top": [
+        {
+          "chunk_id": "2277f257772a75a6",
+          "end_line": 71,
+          "heading": "Embedding provider",
+          "score": 0.9999999441206455,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/plugins_codex_README.md",
+          "start_line": 67
+        },
+        {
+          "chunk_id": "e14bfc4f5ca3bc65",
+          "end_line": 53,
+          "heading": "Embedding Provider",
+          "score": 0.9606894552707672,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_codex_installation.md",
+          "start_line": 45
+        },
+        {
+          "chunk_id": "20985ea5836defce",
+          "end_line": 25,
+          "heading": "Comparison Table",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_index.md",
+          "start_line": 7
+        },
+        {
+          "chunk_id": "ea77a72c1f1ad08e",
+          "end_line": 185,
+          "heading": "Embedding",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/README.md",
+          "start_line": 174
+        },
+        {
+          "chunk_id": "5e28b5ef1397fb8b",
+          "end_line": 14,
+          "heading": "What's New",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/plugins_claude-code_README.md",
+          "start_line": 11
+        }
+      ]
+    },
+    {
+      "query": "Claude Code plugin memory recall skill",
+      "top": [
+        {
+          "chunk_id": "3062c633cf1f923a",
+          "end_line": 79,
+          "heading": "Restart Claude Code to activate the plugin",
+          "score": 0.9692307133227587,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/README.md",
+          "start_line": 50
+        },
+        {
+          "chunk_id": "1111a81d4e8d2571",
+          "end_line": 6,
+          "heading": "Codex CLI Plugin",
+          "score": 0.49999997206032276,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_codex_index.md",
+          "start_line": 1
+        },
+        {
+          "chunk_id": "86dd52f34c4ccc09",
+          "end_line": 47,
+          "heading": "How the Pieces Fit Together",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/plugins_claude-code_README.md",
+          "start_line": 15
+        },
+        {
+          "chunk_id": "b4a30b15650cbd87",
+          "end_line": 8,
+          "heading": "Claude Code Plugin",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_claude-code_index.md",
+          "start_line": 1
+        },
+        {
+          "chunk_id": "7f34f94a30e9d55b",
+          "end_line": 154,
+          "heading": "Comparison with Claude's Native Memory Recall",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_claude-code_memory-recall.md",
+          "start_line": 146
+        }
+      ]
+    },
+    {
+      "query": "FTS5 BM25 with sqlite-vec",
+      "top": [
+        {
+          "chunk_id": "f31c3b8b3ecc55a0",
+          "end_line": 109,
+          "heading": "Compared to memory-core",
+          "score": 0.9760624244809151,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_openclaw_memory-tools.md",
+          "start_line": 92
+        },
+        {
+          "chunk_id": "7d1fa112b58b214a",
+          "end_line": 121,
+          "heading": "Comparison with Other OpenCode Memory Plugins",
+          "score": 0.9684979692101479,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_opencode_memory-tools.md",
+          "start_line": 109
+        },
+        {
+          "chunk_id": "106b21bec72a85ec",
+          "end_line": 24,
+          "heading": "Why memsearch over memory-core?",
+          "score": 0.49999997206032276,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_openclaw_index.md",
+          "start_line": 10
+        },
+        {
+          "chunk_id": "2d55c3e2a248426a",
+          "end_line": 142,
+          "heading": "Why Milvus",
+          "score": 0.49999997206032276,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_design-philosophy.md",
+          "start_line": 113
+        },
+        {
+          "chunk_id": "463841127524d846",
+          "end_line": 103,
+          "heading": "Comparison with claude-mem",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_claude-code_index.md",
+          "start_line": 91
+        }
+      ]
+    },
+    {
+      "query": "Composite chunk ID format",
+      "top": [
+        {
+          "chunk_id": "df6f8a6d2fe1024b",
+          "end_line": 146,
+          "heading": "How It Works",
+          "score": 0.9999999441206455,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 130
+        },
+        {
+          "chunk_id": "8edb29bbcf5e7a6e",
+          "end_line": 164,
+          "heading": "14:47",
+          "score": 0.9838709384202957,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_platforms_openclaw_how-it-works.md",
+          "start_line": 159
+        },
+        {
+          "chunk_id": "1a1be645ee4028c1",
+          "end_line": 54,
+          "heading": "Core Library (`src/memsearch/`)",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/AGENT.md",
+          "start_line": 44
+        },
+        {
+          "chunk_id": "3d23f362f28fa306",
+          "end_line": 174,
+          "heading": "Collection Schema",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_architecture.md",
+          "start_line": 157
+        },
+        {
+          "chunk_id": "965c0234d6e270f5",
+          "end_line": 303,
+          "heading": "Notes",
+          "score": 0.4765625,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_cli.md",
+          "start_line": 296
+        }
+      ]
+    },
+    {
+      "query": "Watchdog file watcher debounce",
+      "top": [
+        {
+          "chunk_id": "b2f8c588b86c0db9",
+          "end_line": 56,
+          "heading": "Core Library (`src/memsearch/`)",
+          "score": 0.9692307133227587,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/AGENT.md",
+          "start_line": 53
+        },
+        {
+          "chunk_id": "bb866635b124a225",
+          "end_line": 429,
+          "heading": "Notes",
+          "score": 0.9692307133227587,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_cli.md",
+          "start_line": 420
+        },
+        {
+          "chunk_id": "5248cfabef7ab814",
+          "end_line": 56,
+          "heading": "Core Library (`src/memsearch/`)",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/CLAUDE.md",
+          "start_line": 53
+        },
+        {
+          "chunk_id": "86a578eadd048107",
+          "end_line": 217,
+          "heading": "`watch`",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_python-api.md",
+          "start_line": 199
+        },
+        {
+          "chunk_id": "602b496f1c255231",
+          "end_line": 56,
+          "heading": "Core Library (`src/memsearch/`)",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/MEMORY.md",
+          "start_line": 53
+        }
+      ]
+    },
+    {
+      "query": "compact command summarization",
+      "top": [
+        {
+          "chunk_id": "09e918763f09db1d",
+          "end_line": 109,
+          "heading": "Key Design Decisions",
+          "score": 0.49999997206032276,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/AGENT.md",
+          "start_line": 106
+        },
+        {
+          "chunk_id": "f87926b73f90ceff",
+          "end_line": 187,
+          "heading": "Compact all memories",
+          "score": 0.49999997206032276,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_python-api.md",
+          "start_line": 184
+        },
+        {
+          "chunk_id": "42e5aa916228232b",
+          "end_line": 109,
+          "heading": "Key Design Decisions",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/CLAUDE.md",
+          "start_line": 106
+        },
+        {
+          "chunk_id": "a62fdf4a9459f3d2",
+          "end_line": 239,
+          "heading": "Available Config Keys",
+          "score": 0.49193546921014786,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/docs_cli.md",
+          "start_line": 226
+        },
+        {
+          "chunk_id": "38e325d11479e38e",
+          "end_line": 109,
+          "heading": "Key Design Decisions",
+          "score": 0.48412701208144426,
+          "source": "/Users/ronny/rdev/memsearch/tests/fixtures/python-baseline/corpus/MEMORY.md",
+          "start_line": 106
+        }
+      ]
+    }
+  ]
+}
