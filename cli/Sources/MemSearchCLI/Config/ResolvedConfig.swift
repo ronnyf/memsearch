@@ -1,33 +1,33 @@
 import Foundation
 import MemSearch
 
-public struct ResolvedConfig: Sendable {
-    public enum Backend: String, Codable, Sendable { case sqlite }
-    public enum Provider: String, Codable, Sendable { case openai }
+struct ResolvedConfig: Sendable {
+    enum Backend: String, Codable, Sendable { case sqlite }
+    enum Provider: String, Codable, Sendable { case openai }
 
-    public struct Store: Sendable {
-        public let backend: Backend
-        public let path: URL
-        public init(backend: Backend, path: URL) { self.backend = backend; self.path = path }
+    struct Store: Sendable {
+        let backend: Backend
+        let path: URL
+        init(backend: Backend, path: URL) { self.backend = backend; self.path = path }
     }
-    public struct Embedder: Sendable {
-        public let provider: Provider
-        public let model: String
-        public let dimension: Int
-        public let apiKey: String?
-        public let baseURL: URL?
-        public init(provider: Provider, model: String, dimension: Int, apiKey: String?, baseURL: URL?) {
+    struct Embedder: Sendable {
+        let provider: Provider
+        let model: String
+        let dimension: Int
+        let apiKey: String?
+        let baseURL: URL?
+        init(provider: Provider, model: String, dimension: Int, apiKey: String?, baseURL: URL?) {
             self.provider = provider; self.model = model; self.dimension = dimension
             self.apiKey = apiKey; self.baseURL = baseURL
         }
     }
 
-    public let paths: [URL]
-    public let store: Store
-    public let embedder: Embedder
-    public let chunkingPolicy: ChunkingPolicy
+    let paths: [URL]
+    let store: Store
+    let embedder: Embedder
+    let chunkingPolicy: ChunkingPolicy
 
-    public init(paths: [URL], store: Store, embedder: Embedder, chunkingPolicy: ChunkingPolicy) {
+    init(paths: [URL], store: Store, embedder: Embedder, chunkingPolicy: ChunkingPolicy) {
         self.paths = paths; self.store = store; self.embedder = embedder; self.chunkingPolicy = chunkingPolicy
     }
 }
@@ -72,6 +72,12 @@ struct MemSearchConfigFile: Codable, Sendable {
 }
 
 extension ResolvedConfig {
+    /// Resolves env-var placeholders inside an optional string. Pass-through nil.
+    private static func resolveOptional(_ s: String?, env: [String: String]) throws -> String? {
+        guard let s else { return nil }
+        return try EnvResolver.resolve(s, env: env)
+    }
+
     static func load(common: CommonOptions) throws -> ResolvedConfig {
         var merged = MemSearchConfigFile()
         let configFiles: [URL] = {
@@ -84,14 +90,25 @@ extension ResolvedConfig {
             }
         }
 
+        let env = ProcessInfo.processInfo.environment
+
         // CLI flag override: --paths wins over the merged config.
-        let pathStrings = common.paths?.split(separator: ",").map { String($0) }
-            ?? merged.paths
-            ?? [(NSHomeDirectory() as NSString).appendingPathComponent("Documents/notes")]
-        let paths = pathStrings.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        // Trim each comma-separated entry; drop empties.
+        let pathStringsResolved: [String]
+        if let cliPaths = common.paths {
+            let raw = cliPaths.split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            pathStringsResolved = try raw.map { try EnvResolver.resolve($0, env: env) }
+        } else if let mergedPaths = merged.paths {
+            pathStringsResolved = try mergedPaths.map { try EnvResolver.resolve($0, env: env) }
+        } else {
+            pathStringsResolved = [(NSHomeDirectory() as NSString).appendingPathComponent("Documents/notes")]
+        }
+        let paths = pathStringsResolved.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
 
         let backend = merged.store?.backend ?? .sqlite
-        let storePathRaw = merged.store?.path
+        let storePathRaw = try resolveOptional(merged.store?.path, env: env)
             ?? "~/Library/Application Support/MemSearch/memory.db"
         let storePath = URL(fileURLWithPath: (storePathRaw as NSString).expandingTildeInPath)
         try FileManager.default.createDirectory(
@@ -100,10 +117,19 @@ extension ResolvedConfig {
         )
 
         let provider  = merged.embedder?.provider ?? .openai
-        let model     = merged.embedder?.model ?? "text-embedding-3-small"
+        let model     = try resolveOptional(merged.embedder?.model, env: env) ?? "text-embedding-3-small"
         let dimension = merged.embedder?.dimension ?? 1536
-        let apiKey    = try merged.embedder?.apiKey.map { try EnvResolver.resolve($0) }
-        let baseURL   = (merged.embedder?.baseURL).flatMap { URL(string: $0) }
+        let apiKey    = try resolveOptional(merged.embedder?.apiKey, env: env)
+
+        let baseURL: URL?
+        if let baseURLString = try resolveOptional(merged.embedder?.baseURL, env: env) {
+            guard let u = URL(string: baseURLString), u.scheme != nil else {
+                throw MemSearchError.configurationInvalid("invalid base_url: \(baseURLString)")
+            }
+            baseURL = u
+        } else {
+            baseURL = nil
+        }
 
         let chunking = ChunkingPolicy(
             maxChunkSize: merged.chunking?.maxChunkSize ?? 1500,

@@ -20,8 +20,11 @@ struct SearchCommand: AsyncParsableCommand {
                 FileHandle.standardOutput.write(Data("\n".utf8))
             } else {
                 for hit in hits {
+                    // Use POSIX locale for `%.3f` so non-US locales (e.g. fr_FR)
+                    // don't emit comma decimal separators that break shell pipelines.
                     let line = String(
                         format: "%.3f  %@:%d-%d  %@\n",
+                        locale: Locale(identifier: "en_US_POSIX"),
                         hit.score,
                         hit.chunk.source.lastPathComponent,
                         hit.chunk.startLine,

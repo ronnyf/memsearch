@@ -1,11 +1,12 @@
 import Foundation
 import MemSearch
 
-public enum EnvResolver {
+enum EnvResolver {
     /// Resolves `${VAR}` and `${VAR:-default}` placeholders in the input string.
     /// Literal `$` is escaped as `$$`. Throws `MemSearchError.configurationInvalid`
-    /// if a `${VAR}` (no default) names an unset environment variable.
-    public static func resolve(
+    /// if a `${VAR}` (no default) names an unset environment variable, or if the
+    /// placeholder is malformed (`${VAR:default}` without the `-` is rejected).
+    static func resolve(
         _ s: String,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> String {
@@ -30,7 +31,12 @@ public enum EnvResolver {
                 let inner = s[s.index(i, offsetBy: 2)..<close]
                 let parts = inner.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
                 let name = String(parts[0])
-                if parts.count == 2, parts[1].hasPrefix("-") {
+                if parts.count == 2 {
+                    guard parts[1].hasPrefix("-") else {
+                        throw MemSearchError.configurationInvalid(
+                            "malformed env-var placeholder: ${\(inner)} (default form is ${VAR:-fallback})"
+                        )
+                    }
                     out.append(env[name] ?? String(parts[1].dropFirst()))
                 } else if let v = env[name] {
                     out.append(v)

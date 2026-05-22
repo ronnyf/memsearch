@@ -52,6 +52,16 @@
   - Fix: `cli/Package.swift` now declares an explicit `.executable(name: "memsearch", targets: ["MemSearchCLI"])` product. The executable target name is `MemSearchCLI` (Swift module name, distinct from `MemSearch`); the user-facing binary stays `memsearch`. Source path pinned to existing `Sources/memsearch/` via `path:` to avoid a directory rename.
   - Test imports updated: `@testable import MemSearchCLI`. Tasks 29 + 31 plan templates that use `@testable import memsearch` will need the same swap.
 
+- **Post-Task-29 adversarial review fixes** (followup to commit `17d70d3`):
+  - `IndexFileError` now conforms to `LocalizedError` — CLI's index-error rendering no longer leaks Swift type names like `embedding(MemSearchEmbeddersHTTP.EmbeddingError...)`. Inner `LocalizedError` messages are surfaced.
+  - `EnvResolver` applied uniformly to all user-provided string fields (model, apiKey, baseURL, store.path, paths) — was apiKey only.
+  - `--paths` trims whitespace per element and filters empties (`--paths " /a , /b ,  "` → `["/a", "/b"]`).
+  - Invalid `base_url` JSON values now throw `MemSearchError.configurationInvalid` (was silently falling back to default).
+  - Malformed `${VAR:default}` (missing dash) now throws instead of silently dropping the suffix.
+  - `ResolvedConfig` and `EnvResolver` demoted from public to internal — CLI-only types.
+  - `SearchCommand` `%.3f` formatting uses `Locale(identifier: "en_US_POSIX")` so non-US locales (e.g. fr_FR) don't emit comma decimal separators that break shell pipelines.
+  - 5 new regression tests across `EnvResolverTests`, `ConfigLoaderTests`, and a new `IndexCommandRenderingTests` file.
+
 ## Items deferred to later phases
 
 (filled during Phase 1)

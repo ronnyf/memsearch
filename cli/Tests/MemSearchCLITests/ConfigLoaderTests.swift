@@ -62,4 +62,54 @@ struct ConfigLoaderTests {
             _ = try ResolvedConfig.load(common: CommonOptions(config: tmp.path, paths: nil))
         }
     }
+
+    @Test("--paths trims whitespace and drops empty entries")
+    func pathsTrimAndFilter() throws {
+        let cfg = try ResolvedConfig.load(common: CommonOptions(
+            config: "/nonexistent.json",
+            paths: " /a , /b ,  , /c "
+        ))
+        #expect(cfg.paths == [
+            URL(fileURLWithPath: "/a"),
+            URL(fileURLWithPath: "/b"),
+            URL(fileURLWithPath: "/c"),
+        ])
+    }
+
+    @Test("invalid base_url throws configurationInvalid")
+    func invalidBaseURL() throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(UUID().uuidString).json")
+        try #"""
+        {"embedder": {"base_url": "not a url"}}
+        """#.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        #expect(throws: MemSearchError.self) {
+            _ = try ResolvedConfig.load(common: CommonOptions(config: tmp.path, paths: nil))
+        }
+    }
+
+    @Test("env-var resolution applies to all string fields")
+    func envResolutionUniform() throws {
+        setenv("MEMSEARCH_TEST_MODEL", "test-model-from-env", 1)
+        setenv("MEMSEARCH_TEST_KEY", "sk-from-env", 1)
+        defer {
+            unsetenv("MEMSEARCH_TEST_MODEL")
+            unsetenv("MEMSEARCH_TEST_KEY")
+        }
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(UUID().uuidString).json")
+        try #"""
+        {
+          "embedder": {
+            "model": "${MEMSEARCH_TEST_MODEL}",
+            "api_key": "${MEMSEARCH_TEST_KEY}"
+          }
+        }
+        """#.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let cfg = try ResolvedConfig.load(common: CommonOptions(config: tmp.path, paths: nil))
+        #expect(cfg.embedder.model == "test-model-from-env")
+        #expect(cfg.embedder.apiKey == "sk-from-env")
+    }
 }

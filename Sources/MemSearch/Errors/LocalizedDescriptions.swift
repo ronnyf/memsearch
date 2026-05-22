@@ -69,3 +69,14 @@ extension LLMError: LocalizedError {
         }
     }
 }
+
+extension IndexFileError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .embedding(let e):  e.errorDescription ?? "Embedding error: \(e)"
+        case .store(let e):      e.errorDescription ?? "Vector store error: \(e)"
+        case .scan(let e):       "File scan error: \(describe(e))"
+        case .chunking(let e):   "Chunking error: \(describe(e))"
+        }
+    }
+}
