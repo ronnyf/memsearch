@@ -1,15 +1,11 @@
-// Stubs to satisfy the `VectorStore` protocol while CRUD / hybridSearch /
-// scan / summary methods land in Tasks 20-22. Each task replaces the
-// relevant stub with a real implementation; this file disappears entirely
-// when Task 22 completes.
+// Stubs to satisfy the `VectorStore` protocol while hybridSearch / scan /
+// summary methods land in Tasks 21-22. Each task replaces the relevant
+// stub with a real implementation; this file disappears entirely when
+// Task 22 completes.
 import Foundation
 import MemSearch
 
 extension SQLiteVectorStore {
-    public func upsert(_ records: [StoredChunk]) async throws -> Int {
-        throw VectorStoreError.unimplemented("upsert: implemented in Task 20")
-    }
-
     public func hybridSearch(_ query: HybridQuery) async throws -> [SearchHit] {
         throw VectorStoreError.unimplemented("hybridSearch: implemented in Task 21")
     }
@@ -18,22 +14,6 @@ extension SQLiteVectorStore {
         AsyncThrowingStream {
             $0.finish(throwing: VectorStoreError.unimplemented("scan: implemented in Task 22"))
         }
-    }
-
-    public func indexedSources() async throws -> Set<URL> {
-        throw VectorStoreError.unimplemented("indexedSources: implemented in Task 20")
-    }
-
-    public func chunkIDs(forSource source: URL) async throws -> Set<ChunkID> {
-        throw VectorStoreError.unimplemented("chunkIDs: implemented in Task 20")
-    }
-
-    public func delete(ids: [ChunkID]) async throws -> Int {
-        throw VectorStoreError.unimplemented("delete(ids:): implemented in Task 20")
-    }
-
-    public func delete(source: URL) async throws -> Int {
-        throw VectorStoreError.unimplemented("delete(source:): implemented in Task 20")
     }
 
     public func summary() async throws -> EngineSummary {

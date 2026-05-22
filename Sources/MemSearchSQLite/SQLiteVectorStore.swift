@@ -22,6 +22,15 @@ public final class SQLiteVectorStore: VectorStore, Sendable {
                             userInfo: [NSLocalizedDescriptionKey: msg])
                 )
             }
+            // Required for the chunks_meta_ad_vec trigger to fire when
+            // INSERT OR REPLACE deletes the conflicting row during upsert.
+            // SQLite's default is OFF, in which case REPLACE conflict-resolution
+            // DELETEs do not fire AFTER DELETE triggers — leaking orphan
+            // chunks_vec rows. See https://www.sqlite.org/lang_conflict.html
+            // ("delete triggers fire if and only if recursive triggers are
+            // enabled"). Per-connection pragma; must be set in prepareDatabase
+            // so every reader/writer in the pool inherits it.
+            try db.execute(sql: "PRAGMA recursive_triggers = ON;")
         }
         do {
             self.pool = try DatabasePool(path: url.path, configuration: config)
@@ -37,5 +46,150 @@ public final class SQLiteVectorStore: VectorStore, Sendable {
         // GRDB's DatabasePool.close() drains the writer + reader pool and is the
         // only path to deterministic teardown (vs. dealloc-time cleanup).
         try? pool.close()
+    }
+}
+
+// MARK: - CRUD
+
+extension SQLiteVectorStore {
+
+    /// Bulk-upsert chunks + embeddings inside a single write transaction.
+    ///
+    /// Validation runs first so `dimensionMismatch` cannot leave the store in a
+    /// partially-written state. The body uses `INSERT OR REPLACE INTO
+    /// chunks_meta(...)` deliberately: the schema's `chunks_meta_ad_vec`
+    /// trigger only fires on DELETE, and `INSERT OR REPLACE` rewrites the row
+    /// (DELETE + INSERT against the TEXT primary key, allocating a fresh
+    /// rowid) which fires the trigger and clears any orphan `chunks_vec` row.
+    /// Switching to `UPDATE` or `ON CONFLICT DO UPDATE` would preserve the
+    /// rowid and leak the previous embedding — see Task 19's iteration-2
+    /// review.
+    public func upsert(_ records: [StoredChunk]) async throws -> Int {
+        guard !records.isEmpty else { return 0 }
+        for r in records where r.embedding.dimension != dimension {
+            throw VectorStoreError.dimensionMismatch(
+                expected: dimension,
+                got: r.embedding.dimension
+            )
+        }
+        do {
+            return try await pool.write { db in
+                for r in records {
+                    try db.execute(sql: """
+                        INSERT OR REPLACE INTO chunks_meta(
+                            chunk_id, source, heading, heading_level,
+                            start_line, end_line, content, content_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        r.chunk.id.rawValue,
+                        r.chunk.source.path,
+                        r.chunk.heading,
+                        r.chunk.headingLevel,
+                        r.chunk.startLine,
+                        r.chunk.endLine,
+                        r.chunk.content,
+                        r.chunk.contentHash,
+                    ])
+                    let rowid: Int64 = try Int64.fetchOne(
+                        db,
+                        sql: "SELECT rowid FROM chunks_meta WHERE chunk_id = ?",
+                        arguments: [r.chunk.id.rawValue]
+                    )!
+                    try db.execute(
+                        sql: "INSERT OR REPLACE INTO chunks_vec(rowid, embedding) VALUES (?, ?)",
+                        arguments: [rowid, embeddingBlob(r.embedding.values)]
+                    )
+                }
+                return records.count
+            }
+        } catch let e as VectorStoreError {
+            throw e
+        } catch {
+            throw VectorStoreError.backendError(error)
+        }
+    }
+
+    public func delete(ids: [ChunkID]) async throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        do {
+            return try await pool.write { db in
+                var n = 0
+                for id in ids {
+                    if let r: Int64 = try Int64.fetchOne(
+                        db,
+                        sql: "SELECT rowid FROM chunks_meta WHERE chunk_id = ?",
+                        arguments: [id.rawValue]
+                    ) {
+                        // Explicit chunks_vec DELETE before chunks_meta DELETE
+                        // is intentional: the trigger would handle it, but
+                        // doing it explicitly keeps single-source-of-truth at
+                        // this layer if a future schema change reorders things.
+                        try db.execute(
+                            sql: "DELETE FROM chunks_vec WHERE rowid = ?",
+                            arguments: [r]
+                        )
+                        try db.execute(
+                            sql: "DELETE FROM chunks_meta WHERE chunk_id = ?",
+                            arguments: [id.rawValue]
+                        )
+                        n += 1
+                    }
+                }
+                return n
+            }
+        } catch {
+            throw VectorStoreError.backendError(error)
+        }
+    }
+
+    public func delete(source: URL) async throws -> Int {
+        do {
+            return try await pool.write { db in
+                let rowids: [Int64] = try Int64.fetchAll(
+                    db,
+                    sql: "SELECT rowid FROM chunks_meta WHERE source = ?",
+                    arguments: [source.path]
+                )
+                for r in rowids {
+                    try db.execute(
+                        sql: "DELETE FROM chunks_vec WHERE rowid = ?",
+                        arguments: [r]
+                    )
+                }
+                try db.execute(
+                    sql: "DELETE FROM chunks_meta WHERE source = ?",
+                    arguments: [source.path]
+                )
+                return rowids.count
+            }
+        } catch {
+            throw VectorStoreError.backendError(error)
+        }
+    }
+
+    public func indexedSources() async throws -> Set<URL> {
+        do {
+            let paths: [String] = try await pool.read { db in
+                try String.fetchAll(db, sql: "SELECT DISTINCT source FROM chunks_meta")
+            }
+            return Set(paths.map { URL(fileURLWithPath: $0) })
+        } catch {
+            throw VectorStoreError.backendError(error)
+        }
+    }
+
+    public func chunkIDs(forSource source: URL) async throws -> Set<ChunkID> {
+        do {
+            let ids: [String] = try await pool.read { db in
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT chunk_id FROM chunks_meta WHERE source = ?",
+                    arguments: [source.path]
+                )
+            }
+            return Set(ids.map(ChunkID.init))
+        } catch {
+            throw VectorStoreError.backendError(error)
+        }
     }
 }
