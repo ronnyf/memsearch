@@ -193,3 +193,81 @@ extension SQLiteVectorStore {
         }
     }
 }
+
+// MARK: - scan + summary
+
+extension SQLiteVectorStore {
+
+    /// Streams every chunk matching the optional source-prefix filter.
+    ///
+    /// `nonisolated` so stream construction does not require an actor hop —
+    /// callers receive the stream synchronously. The body uses
+    /// `Task { [pool] in ... }` capturing `pool` directly (avoiding `self`
+    /// capture) so the closure remains `@Sendable` without leaking the store.
+    ///
+    /// Cancellation is observed at two points: once before issuing
+    /// `pool.read` (GRDB's await only surfaces cancellation when it returns,
+    /// which on a slow query is too late), and once per yielded row so a
+    /// consumer that walks away mid-stream stops doing work promptly.
+    ///
+    /// **Sendable boundary.** `Row` conformance to `Sendable` is explicitly
+    /// `unavailable` in GRDB 7.x; mapping `Row` → `Chunk` happens inside the
+    /// `pool.read` closure so only `[Chunk]` (Sendable) crosses the actor
+    /// boundary. Same pattern as `SQLiteHybridSearch`.
+    public nonisolated func scan(filter: SourceFilter?) -> AsyncThrowingStream<Chunk, any Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [pool] in
+                do {
+                    try Task.checkCancellation()
+                    let chunks: [Chunk] = try await pool.read { db in
+                        let rows: [Row]
+                        if let f = filter {
+                            rows = try Row.fetchAll(
+                                db,
+                                sql: "SELECT * FROM chunks_meta WHERE source LIKE ? ORDER BY chunk_id",
+                                arguments: [f.prefix.path + "%"]
+                            )
+                        } else {
+                            rows = try Row.fetchAll(
+                                db,
+                                sql: "SELECT * FROM chunks_meta ORDER BY chunk_id"
+                            )
+                        }
+                        return rows.map(Chunk.make(fromMetaRow:))
+                    }
+                    for chunk in chunks {
+                        try Task.checkCancellation()
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Snapshot-consistent counts inside one `pool.read` — both `COUNT`
+    /// expressions execute against the same SQLite snapshot, so concurrent
+    /// `upsert` / `delete` calls cannot produce torn `(sources, chunks)`
+    /// pairs. See `VectorStore.summary()` doc for the loop-2 review trail.
+    public func summary() async throws -> EngineSummary {
+        do {
+            return try await pool.read { db in
+                let row = try Row.fetchOne(db, sql: """
+                    SELECT COUNT(DISTINCT source) AS sources, COUNT(*) AS chunks
+                    FROM chunks_meta
+                """)!
+                return EngineSummary(
+                    sourceCount: row["sources"] as Int,
+                    chunkCount:  row["chunks"]  as Int
+                )
+            }
+        } catch let e as VectorStoreError {
+            throw e
+        } catch {
+            throw VectorStoreError.backendError(error)
+        }
+    }
+}
