@@ -16,6 +16,7 @@
 
 - **`phase1Settings` declaration order in `Package.swift`** (followup to commit `31835e1`): hoisted above the `Package(...)` initializer. The plan and original commit declared it after, causing `swift package dump-package` to emit `"settings": []` for every Swift target — `ApproachableConcurrency` was silently disabled. Fix verified with `swift package dump-package | jq '.targets[] | .settings'` showing one swift setting per target. Plan source patched in the same commit.
 - **`VectorStore.summary() async throws -> EngineSummary`** (Task 8): added to the protocol per the plan's Step 1 callout. Doc comment cites the loop-2 review finding (engine-level N+1 raced concurrent indexStream calls). Spec source patched in `2026-05-20-swift-rewrite-design.md` in the same commit. SQLite impl in Task 22; mock impl in Task 9.
+- **`RRFTests.twoRetrievers` tolerance** (Task 11, commit `1223f06`): plan asserted `< 1e-3` with comment "both at max." Math says otherwise — input `[[a,b],[b,a]]` puts each item at rank 1 in one retriever and rank 2 in the other (not rank 1 in both), so neither hits the theoretical max. Raw `= 1/61 + 1/62 ≈ 0.03252`; norm `= raw / (2/61) ≈ 0.9919`; `|norm - 1.0| ≈ 0.0081`, within `1e-2` not `1e-3`. Test tolerance loosened to `1e-2` and the comment now shows the math. RRF.fuse implementation itself is verbatim from plan and matches Python `store.py:209`.
 
 ## Items deferred to later phases
 

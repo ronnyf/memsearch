@@ -1953,8 +1953,11 @@ struct RRFTests {
     func twoRetrievers() {
         let fused = RRF.fuse([[ChunkID("a"), ChunkID("b")], [ChunkID("b"), ChunkID("a")]], k: 60, topK: 2)
         #expect(Set(fused.map(\.0)) == [ChunkID("a"), ChunkID("b")])
-        // Max possible = 2/(60+1); both at max.
-        #expect(abs(fused[0].1 - 1.0) < 1e-3)
+        // Max possible = 2/(60+1); each item ranks #1 in one retriever and #2
+        // in the other (not #1 in both), so neither hits the theoretical max.
+        // Raw = 1/61 + 1/62 ≈ 0.03252; norm = raw / (2/61) ≈ 0.9919, so
+        // |fused − 1.0| ≈ 0.0081 — within 1e-2, NOT 1e-3.
+        #expect(abs(fused[0].1 - 1.0) < 1e-2)
     }
 
     @Test("topK bounds the output")
