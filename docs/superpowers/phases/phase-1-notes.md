@@ -40,6 +40,13 @@
   - Dead `catch let e as VectorStoreError` clauses removed in `upsert`, `summary`.
   - Tests added: scan consumer-cancel; hybridSearch filter behavior. Sources/MemSearchSQLite/SQLiteVectorStore.swift force-unwrap on summary documented.
 
+- **Post-Task-24 adversarial review fixes** (followup to commit `eaf7022`):
+  - Test URLSessions now `invalidateAndCancel()` on defer to prevent per-test session leaks.
+  - JSONEncoder/JSONDecoder hoisted to static class lets in OpenAIEmbedder (one allocation per class).
+  - Wire DTO edge-case tests added: empty data, missing field, extra-field forward-compat.
+  - Count-mismatch postcondition test added — catches contract violations where server returns fewer embeddings than requested.
+  - Cooperative `Task.checkCancellation()` added at top of `embed(_:)` to catch pre-network cancellation.
+
 ## Items deferred to later phases
 
 (filled during Phase 1)

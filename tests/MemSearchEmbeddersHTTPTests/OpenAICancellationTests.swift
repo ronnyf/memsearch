@@ -29,6 +29,7 @@ struct OpenAICancellationTests {
     @Test("URLError(.cancelled) on a cancelled Task surfaces as CancellationError")
     func cancelledTask() async throws {
         let session = makeSession()
+        defer { session.invalidateAndCancel() }
         let embedder = OpenAIEmbedder(apiKey: "k", session: session)
 
         let outer = Task {
@@ -42,6 +43,7 @@ struct OpenAICancellationTests {
     @Test("URLError(.cancelled) on a NON-cancelled task surfaces as EmbeddingError.networkFailure")
     func nonTaskCancellation() async throws {
         let session = makeSession()
+        defer { session.invalidateAndCancel() }
         let embedder = OpenAIEmbedder(apiKey: "k", session: session)
 
         // Run on a non-cancelled Task — `try Task.checkCancellation()` does NOT throw,

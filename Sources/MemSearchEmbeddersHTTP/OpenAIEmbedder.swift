@@ -9,6 +9,9 @@ public final class OpenAIEmbedder: EmbeddingProvider, Sendable {
     let baseURL: URL
     let session: URLSession
 
+    private static let encoder = JSONEncoder()
+    private static let decoder = JSONDecoder()
+
     public init(
         apiKey: String,
         model: String = "text-embedding-3-small",
@@ -24,6 +27,7 @@ public final class OpenAIEmbedder: EmbeddingProvider, Sendable {
     }
 
     public func embed(_ texts: [String]) async throws -> [Embedding] {
+        try Task.checkCancellation()
         guard !texts.isEmpty else { return [] }
 
         let url = baseURL.appendingPathComponent("embeddings")
@@ -31,7 +35,7 @@ public final class OpenAIEmbedder: EmbeddingProvider, Sendable {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        req.httpBody = try JSONEncoder().encode(OpenAIEmbeddingRequest(input: texts, model: modelName))
+        req.httpBody = try Self.encoder.encode(OpenAIEmbeddingRequest(input: texts, model: modelName))
 
         let data: Data
         let response: URLResponse
@@ -58,7 +62,7 @@ public final class OpenAIEmbedder: EmbeddingProvider, Sendable {
 
         let decoded: OpenAIEmbeddingResponse
         do {
-            decoded = try JSONDecoder().decode(OpenAIEmbeddingResponse.self, from: data)
+            decoded = try Self.decoder.decode(OpenAIEmbeddingResponse.self, from: data)
         } catch {
             throw EmbeddingError.decodingFailed(error)
         }
