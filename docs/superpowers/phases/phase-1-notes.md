@@ -64,7 +64,7 @@
 
 ## Items deferred to later phases
 
-(filled during Phase 1)
+- **Live-OpenAI success criteria 2/3/5/6** (Task 31): the Apple Claude Code security sandbox blocks `api.openai.com`. The CLI's index/search/idempotency-recheck/Python-cross-check criteria need a live OpenAI embedding round-trip per query and per chunk. Engine-layer end-to-end coverage is satisfied by the `EngineRoundTripTests.roundTrip` test (Task 17) which drives `index() → search()` against `MockEmbeddingProvider` + `MockVectorStore` — proves the pipeline wires correctly. Live-corpus dogfooding (with allowlist + real OpenAI cost) deferred until the `api.openai.com` allowlist is in place. The fixture (`tests/fixtures/python-baseline/python-top5.json` + `.sha256` + `manifest.json`) is committed and ready; a single `swift run memsearch index --paths tests/fixtures/python-baseline/corpus` followed by the `cross_check.py` script from the Phase 1 plan's Task 31 Step 6 closes criterion 6.
 
 ## iOS-Simulator compile-gate (canonical command)
 
@@ -113,3 +113,19 @@ xcodebuild build-for-testing -scheme MemSearch-Package \
 ```
 
 Output ends with `** TEST BUILD SUCCEEDED **` and produces `MemSearchHostCompileTests.xctest` under `Debug-iphonesimulator/`, confirming the host snippet compiles for iOS.
+
+## Success criteria — Phase 1 verification
+
+| # | Criterion                                            | Result                  |
+|---|------------------------------------------------------|-------------------------|
+| 1 | `swift test` green                                   | PASS (49 lib + 16 CLI = 65 tests across 22 + 4 suites) |
+| 2 | `memsearch index` runs                               | DEFERRED (sandbox blocks `api.openai.com`) |
+| 3 | `memsearch search` returns top-K                     | DEFERRED (depends on indexed corpus from #2) |
+| 4 | `memsearch info` reports stats                       | PASS (`Sources: 0  Chunks: 0` against fresh store) |
+| 5 | Idempotency on re-index                              | DEFERRED (depends on indexed corpus from #2) |
+| 6 | ≥60% top-3 overlap with Python top-5                 | DEFERRED (Python fixture committed in Task 1; cross-check needs live #2) |
+| 7 | Cancellation surfaces as `CancellationError`         | PASS (covered by `EngineCancellationTests` + `OpenAICancellationTests` in #1) |
+
+Date: 2026-05-22
+
+**On the deferrals:** the four deferred criteria all need a live OpenAI embedding round-trip (per chunk for index, per query for search). `api.openai.com` is currently sandbox-blocked at the user's local proxy. Engine-layer pipeline correctness is satisfied by `EngineRoundTripTests.roundTrip` (Task 17), which drives `index() → search()` end-to-end against `MockEmbeddingProvider` + `MockVectorStore`. Live-corpus dogfooding deferred until the allowlist is in place; the cross-check fixture (committed in Task 1) is ready.
