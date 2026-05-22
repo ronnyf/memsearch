@@ -70,3 +70,11 @@ xcodebuild build \
 SwiftPM auto-generates one scheme per library product. The CLI executable scheme (`memsearch`) is **excluded** from this gate — the CLI is macOS-only by design.
 
 The `SQLiteVec` C product is iOS-required (transitively via `MemSearchSQLite`); SwiftPM links it through the dependent product, so explicitly building `MemSearchSQLite` covers it.
+
+## Programmatic init verified
+
+`MemSearch(paths:store:embedder:)` constructs without any config-file loading.
+The iOS-style construction path (host calls `try await SQLiteVectorStore(url:dimension:)`,
+constructs `OpenAIEmbedder(apiKey:model:dimension:)`, and passes both to
+`MemSearch.init`) compiles and runs. Coverage proxied by the engine round-trip
+test (Task 17) which uses the same construction shape.

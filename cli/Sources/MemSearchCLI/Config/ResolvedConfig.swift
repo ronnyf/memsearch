@@ -32,42 +32,116 @@ public struct ResolvedConfig: Sendable {
     }
 }
 
+/// On-disk shape of a memsearch config file. JSON in v1; the same `Codable`
+/// struct round-trips through future YAML/TOML decoders without changing
+/// any call site — only `ConfigLoader.load(at:)` adds a new dispatch case.
+struct MemSearchConfigFile: Codable, Sendable {
+    var paths: [String]?
+    var store: Store?
+    var embedder: Embedder?
+    var chunking: Chunking?
+
+    struct Store: Codable, Sendable {
+        var backend: ResolvedConfig.Backend?
+        var path: String?
+    }
+
+    struct Embedder: Codable, Sendable {
+        var provider: ResolvedConfig.Provider?
+        var model: String?
+        var dimension: Int?
+        var apiKey: String?
+        var baseURL: String?
+
+        enum CodingKeys: String, CodingKey {
+            case provider, model, dimension
+            case apiKey  = "api_key"
+            case baseURL = "base_url"
+        }
+    }
+
+    struct Chunking: Codable, Sendable {
+        var maxChunkSize: Int?
+        var overlapLines: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case maxChunkSize = "max_chunk_size"
+            case overlapLines = "overlap_lines"
+        }
+    }
+}
+
 extension ResolvedConfig {
-    /// Phase 1 placeholder. Task 29 replaces this with the layered JSON config loader.
-    /// For now: hardcoded sane defaults; honors --paths and rejects --config.
     static func load(common: CommonOptions) throws -> ResolvedConfig {
-        if common.config != nil {
-            throw MemSearchError.configurationInvalid(
-                "Config file loading lands in Task 29; only env-var + --paths are supported in this Phase 1 milestone"
-            )
+        var merged = MemSearchConfigFile()
+        let configFiles: [URL] = {
+            if let p = common.config { return [URL(fileURLWithPath: p)] }
+            return ConfigLoader.defaultPaths()
+        }()
+        for url in configFiles {
+            if let layer = try ConfigLoader.load(at: url) {
+                merged = merge(into: merged, layer: layer)
+            }
         }
-        let pathStrings: [String]
-        if let p = common.paths {
-            pathStrings = p.split(separator: ",").map { String($0) }
-        } else {
-            pathStrings = []
-        }
+
+        // CLI flag override: --paths wins over the merged config.
+        let pathStrings = common.paths?.split(separator: ",").map { String($0) }
+            ?? merged.paths
+            ?? [(NSHomeDirectory() as NSString).appendingPathComponent("Documents/notes")]
         let paths = pathStrings.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
 
-        let storeDir = (NSHomeDirectory() as NSString)
-            .appendingPathComponent("Library/Application Support/MemSearch")
+        let backend = merged.store?.backend ?? .sqlite
+        let storePathRaw = merged.store?.path
+            ?? "~/Library/Application Support/MemSearch/memory.db"
+        let storePath = URL(fileURLWithPath: (storePathRaw as NSString).expandingTildeInPath)
         try FileManager.default.createDirectory(
-            atPath: storeDir, withIntermediateDirectories: true)
-        let storePath = URL(fileURLWithPath: storeDir).appendingPathComponent("memory.db")
+            at: storePath.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
 
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+        let provider  = merged.embedder?.provider ?? .openai
+        let model     = merged.embedder?.model ?? "text-embedding-3-small"
+        let dimension = merged.embedder?.dimension ?? 1536
+        let apiKey    = try merged.embedder?.apiKey.map { try EnvResolver.resolve($0) }
+        let baseURL   = (merged.embedder?.baseURL).flatMap { URL(string: $0) }
+
+        let chunking = ChunkingPolicy(
+            maxChunkSize: merged.chunking?.maxChunkSize ?? 1500,
+            overlapLines: merged.chunking?.overlapLines ?? 2
+        )
 
         return ResolvedConfig(
             paths: paths,
-            store: .init(backend: .sqlite, path: storePath),
-            embedder: .init(
-                provider: .openai,
-                model: "text-embedding-3-small",
-                dimension: 1536,
-                apiKey: apiKey,
-                baseURL: nil
-            ),
-            chunkingPolicy: .default
+            store: .init(backend: backend, path: storePath),
+            embedder: .init(provider: provider, model: model, dimension: dimension, apiKey: apiKey, baseURL: baseURL),
+            chunkingPolicy: chunking
         )
     }
+}
+
+private func merge(into base: MemSearchConfigFile, layer: MemSearchConfigFile) -> MemSearchConfigFile {
+    var out = base
+    if let p = layer.paths { out.paths = p }
+    if let s = layer.store {
+        var m = out.store ?? .init()
+        if let v = s.backend { m.backend = v }
+        if let v = s.path    { m.path = v }
+        out.store = m
+    }
+    if let e = layer.embedder {
+        var m = out.embedder ?? .init()
+        if let v = e.provider  { m.provider = v }
+        if let v = e.model     { m.model = v }
+        if let v = e.dimension { m.dimension = v }
+        if let v = e.apiKey    { m.apiKey = v }
+        if let v = e.baseURL   { m.baseURL = v }
+        out.embedder = m
+    }
+    if let c = layer.chunking {
+        var m = out.chunking ?? .init()
+        if let v = c.maxChunkSize { m.maxChunkSize = v }
+        if let v = c.overlapLines { m.overlapLines = v }
+        out.chunking = m
+    }
+    return out
 }
