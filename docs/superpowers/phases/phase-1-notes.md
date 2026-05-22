@@ -19,3 +19,18 @@
 ## Items deferred to later phases
 
 (filled during Phase 1)
+
+## iOS-Simulator compile-gate (canonical command)
+
+For each iOS-required library product (`MemSearch`, `MemSearchSQLite`, `MemSearchEmbeddersHTTP`):
+
+```bash
+xcodebuild build \
+    -scheme <ProductName> \
+    -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath /tmp/derived
+```
+
+SwiftPM auto-generates one scheme per library product. The CLI executable scheme (`memsearch`) is **excluded** from this gate — the CLI is macOS-only by design.
+
+The `SQLiteVec` C product is iOS-required (transitively via `MemSearchSQLite`); SwiftPM links it through the dependent product, so explicitly building `MemSearchSQLite` covers it.
