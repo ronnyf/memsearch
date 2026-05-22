@@ -88,3 +88,28 @@ The iOS-style construction path (host calls `try await SQLiteVectorStore(url:dim
 constructs `OpenAIEmbedder(apiKey:model:dimension:)`, and passes both to
 `MemSearch.init`) compiles and runs. Coverage proxied by the engine round-trip
 test (Task 17) which uses the same construction shape.
+
+## iOS Simulator compile gate (Phase 1 run)
+
+| Product                           | Result |
+| --------------------------------- | ------ |
+| `MemSearch`                       | PASS   |
+| `MemSearchSQLite`                 | PASS   |
+| `MemSearchEmbeddersHTTP`          | PASS   |
+| `MemSearchHostCompileTests`       | PASS   |
+
+Date: 2026-05-22
+
+The host-snippet gate reproduces the design spec's SwiftUI integration
+appendix verbatim; if any future task changes a `public` engine method
+signature, this gate fails before the design spec drifts.
+
+**Plan delta — test-target scheme name:** the plan's `xcodebuild build -scheme MemSearchHostCompileTests` does not work as written because SwiftPM auto-generates xcodebuild schemes for *library products* only, not for test targets. The aggregate `MemSearch-Package` scheme covers all test targets; build-for-testing it instead:
+
+```bash
+xcodebuild build-for-testing -scheme MemSearch-Package \
+    -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath /tmp/derived
+```
+
+Output ends with `** TEST BUILD SUCCEEDED **` and produces `MemSearchHostCompileTests.xctest` under `Debug-iphonesimulator/`, confirming the host snippet compiles for iOS.

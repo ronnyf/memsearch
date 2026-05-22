@@ -71,6 +71,11 @@ let package = Package(
             dependencies: ["MemSearch", "MemSearchEmbeddersHTTP"],
             swiftSettings: phase1Settings
         ),
+        .testTarget(
+            name: "MemSearchHostCompileTests",
+            dependencies: ["MemSearch", "MemSearchSQLite", "MemSearchEmbeddersHTTP"],
+            swiftSettings: phase1Settings
+        ),
     ],
     swiftLanguageModes: [.v6]
 )
