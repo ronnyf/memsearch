@@ -1,6 +1,10 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+let phase1Settings: [SwiftSetting] = [
+    .enableUpcomingFeature("ApproachableConcurrency"),
+]
+
 let package = Package(
     name: "MemSearch",
     platforms: [.macOS(.v14), .iOS(.v17), .visionOS(.v1)],
@@ -69,7 +73,3 @@ let package = Package(
     ],
     swiftLanguageModes: [.v6]
 )
-
-let phase1Settings: [SwiftSetting] = [
-    .enableUpcomingFeature("ApproachableConcurrency"),
-]
