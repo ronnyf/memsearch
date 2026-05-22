@@ -29,7 +29,6 @@ let package = Package(
                 .product(name: "MemSearchEmbeddersHTTP",    package: "MemSearch"),
                 .product(name: "ArgumentParser",            package: "swift-argument-parser"),
             ],
-            path: "Sources/memsearch",
             swiftSettings: [.enableUpcomingFeature("ApproachableConcurrency")]
         ),
         .testTarget(

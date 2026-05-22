@@ -7,6 +7,8 @@ __pycache__/
 dist/
 build/
 site/
+.build/
+.swiftpm/
 
 # Virtual environments
 .venv/
