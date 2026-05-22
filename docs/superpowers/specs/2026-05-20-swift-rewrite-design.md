@@ -228,6 +228,16 @@ public protocol VectorStore: Sendable {
     func chunkIDs(forSource: URL) async throws -> Set<ChunkID>
     func delete(ids: [ChunkID]) async throws -> Int
     func delete(source: URL) async throws -> Int
+
+    /// Snapshot-consistent counts in a single backend round-trip — must be
+    /// computed inside one read transaction so concurrent writers cannot
+    /// produce torn `(sources, chunks)` pairs. SQLite implements this as
+    /// `SELECT COUNT(DISTINCT source), COUNT(*) FROM chunks_meta` inside
+    /// `pool.read`. Loop-2 review surfaced that an N+1 engine-level loop
+    /// over `indexedSources()` + `chunkIDs(forSource:)` raced concurrent
+    /// `indexStream` calls; this protocol method removes the gap.
+    func summary() async throws -> EngineSummary
+
     func close() async
 }
 
