@@ -38,7 +38,68 @@ extension EmbeddingError: LocalizedError {
         case .modelNotFound(let name):         "Embedding model not found: \(name)"
         case .networkFailure(let e):           "Embedding network failure: \(describe(e))"
         case .decodingFailed(let e):           "Embedding response decoding failed: \(describe(e))"
+        case .httpFailure(let status, let body):
+            if let body, !body.isEmpty { "Embedding HTTP \(status): \(sanitize(body))" }
+            else { "Embedding HTTP \(status)" }
         }
+    }
+}
+
+/// Defense-in-depth for `EmbeddingError.httpFailure(body:)`: third-party
+/// HTTP-compatible endpoints (configurable `baseURL` on `OpenAIEmbedder`) may
+/// echo headers including `Authorization`, return multi-MB HTML proxy pages,
+/// or include control characters that corrupt terminal output. Strip non-
+/// whitespace control / surrogate scalars, redact bearer tokens that echo
+/// from a misbehaving proxy, and clamp body content at 512 codepoints (the
+/// `…` suffix is appended on truncation, so the rendered length is 513).
+/// Stays in the formatting layer so producers retain full forensic data.
+private func sanitize(_ s: String) -> String {
+    // Single-pass filter + clamp + truncation flag. Avoids the lazy-filter
+    // ↔ UnicodeScalarView slice round-trip which silently dropped scalars
+    // in iter-3. Bounded work: at most 513 input scalars are inspected
+    // before `truncated` is set and the loop exits.
+    var trimmed = ""
+    trimmed.reserveCapacity(min(s.utf8.count, 512))
+    var kept = 0
+    var truncated = false
+    for c in s.unicodeScalars {
+        let isWhitespace = c == "\n" || c == "\t" || c == "\r"
+        let isStripped = !isWhitespace && c.properties.generalCategory.isTerminalControl
+        guard !isStripped else { continue }
+        if kept >= 512 {
+            truncated = true
+            break
+        }
+        trimmed.unicodeScalars.append(c)
+        kept += 1
+    }
+    let withSuffix = truncated ? trimmed + "…" : trimmed
+    return redactBearerTokens(withSuffix)
+}
+
+/// Defense-in-depth: a hostile or buggy proxy at a custom `baseURL` could
+/// echo back the `Authorization: Bearer <token>` header in its error body.
+/// Strip the bearer value from any rendered string. Pattern matches
+/// "Bearer " followed by URL-safe characters typical of API keys plus `=`
+/// (base64 padding for JWT-style bearer tokens).
+private func redactBearerTokens(_ s: String) -> String {
+    s.replacingOccurrences(
+        of: #"Bearer\s+[A-Za-z0-9\-_.~+/=]+"#,
+        with: "Bearer [REDACTED]",
+        options: .regularExpression
+    )
+}
+
+private extension Unicode.GeneralCategory {
+    /// Categories that meaningfully corrupt terminal output / log files.
+    /// `.control` (Cc) is the obvious threat. `.surrogate` (Cs) cannot occur
+    /// in a valid Swift `String` — UTF-8 decoding would have failed upstream
+    /// — but include it for completeness. Cf (format, e.g. ZWJ) and Co
+    /// (private use) are *intentionally excluded*: stripping ZWJ mangles
+    /// emoji sequences (👨‍👩‍👧‍👦), and private-use scalars are user-content,
+    /// not adversarial.
+    var isTerminalControl: Bool {
+        self == .control || self == .surrogate
     }
 }
 

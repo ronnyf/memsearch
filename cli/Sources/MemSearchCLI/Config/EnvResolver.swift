@@ -26,13 +26,22 @@ enum EnvResolver {
                s.index(after: i) < s.endIndex,
                s[s.index(after: i)] == "{" {
                 guard let close = s[i...].firstIndex(of: "}") else {
-                    throw MemSearchError.configurationInvalid("unterminated ${...} in: \(s)")
+                    // Don't echo the full input — it may contain a secret
+                    // prefix (e.g. partial `api_key` value with a typo'd
+                    // placeholder appended). Show only the start of the
+                    // unterminated placeholder for diagnosis.
+                    let snippet = String(s[i...].prefix(16))
+                    throw MemSearchError.configurationInvalid(
+                        "unterminated ${...} (starting at: \(snippet)\(s[i...].count > 16 ? "..." : ""))"
+                    )
                 }
                 let inner = s[s.index(i, offsetBy: 2)..<close]
                 let parts = inner.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
                 let name = String(parts[0])
                 if parts.count == 2 {
                     guard parts[1].hasPrefix("-") else {
+                        // `inner` is just the placeholder body (e.g. `VAR:foo`),
+                        // not the full input — safe to surface.
                         throw MemSearchError.configurationInvalid(
                             "malformed env-var placeholder: ${\(inner)} (default form is ${VAR:-fallback})"
                         )

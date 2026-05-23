@@ -12,8 +12,22 @@ public enum Scanner {
                 continue
             }
             let opts: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
-            guard let enumerator = fm.enumerator(at: path, includingPropertiesForKeys: nil, options: opts) else { continue }
-            for case let url as URL in enumerator where isMarkdown(url) { out.append(url) }
+            let resourceKeys: Set<URLResourceKey> = [.isSymbolicLinkKey]
+            guard let enumerator = fm.enumerator(
+                at: path,
+                includingPropertiesForKeys: Array(resourceKeys),
+                options: opts
+            ) else { continue }
+            for case let url as URL in enumerator where isMarkdown(url) {
+                // Skip symlinks: a `~/notes/escape -> /etc` link inside the
+                // declared root would otherwise let the indexer pull in
+                // arbitrary filesystem content. **Fail-closed** — an
+                // unexpected resource-value read failure is preferable to
+                // potentially leaking arbitrary filesystem content.
+                let isSymlink = (try? url.resourceValues(forKeys: resourceKeys))?.isSymbolicLink ?? true
+                if isSymlink { continue }
+                out.append(url)
+            }
         }
         return out.sorted { $0.path < $1.path }
     }

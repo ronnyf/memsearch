@@ -25,6 +25,8 @@ htmlcov/
 
 # Runtime
 .memsearch/
+.memsearch.json
+**/.memsearch.json
 CONTEXT.md
 CLAUDE.local.md
 

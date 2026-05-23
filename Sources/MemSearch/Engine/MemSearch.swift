@@ -13,10 +13,22 @@ public struct MemSearch<V: VectorStore, E: EmbeddingProvider>: Sendable {
         self.chunkingPolicy = chunkingPolicy
     }
 
-    public func search(_ query: String, topK: Int = 10, filter: SourceFilter? = nil) async throws -> [SearchHit] {
+    /// Read-only projection of the embedder's identity. Hosts in **sibling
+    /// SwiftPM packages** can't see `package`-scoped `embedder`, so these
+    /// projections give them the same diagnostic info (CLI `info`, SwiftUI
+    /// dashboards) without widening `embedder` itself.
+    public var modelName: String { embedder.modelName }
+    public var dimension: Int { embedder.dimension }
+
+    public func search(
+        _ query: String,
+        topK: Int = 10,
+        filter: SourceFilter? = nil,
+        rrfK: Int = 60
+    ) async throws -> [SearchHit] {
         do {
             let qVec = try await embedder.embed([query])[0]
-            let hq = HybridQuery(queryText: query, queryEmbedding: qVec, topK: topK, filter: filter, rrfK: 60)
+            let hq = HybridQuery(queryText: query, queryEmbedding: qVec, topK: topK, filter: filter, rrfK: rrfK)
             return try await store.hybridSearch(hq)
         } catch {
             throw MemSearchEngineErrors.lift(error)

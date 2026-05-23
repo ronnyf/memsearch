@@ -24,6 +24,16 @@ enum BackendDispatch {
             baseURL: cfg.embedder.baseURL ?? URL(string: "https://api.openai.com/v1")!
         )
         let mem = MemSearch(paths: cfg.paths, store: store, embedder: embedder, chunkingPolicy: cfg.chunkingPolicy)
-        return try await body(mem)
+        // Deterministic GRDB DatabasePool teardown. `defer` can't `await`, so
+        // hand-rolled both-paths close. Long-running daemons reusing
+        // `BackendDispatch.run` per request would otherwise leak pool readers.
+        do {
+            let result = try await body(mem)
+            await store.close()
+            return result
+        } catch {
+            await store.close()
+            throw error
+        }
     }
 }

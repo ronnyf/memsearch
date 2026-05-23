@@ -57,7 +57,16 @@ public final class OpenAIEmbedder: EmbeddingProvider, Sendable {
                 .flatMap(Double.init).map(Duration.seconds)
             throw EmbeddingError.rateLimited(retryAfter: retry)
         default:
-            throw EmbeddingError.networkFailure(URLError(.badServerResponse))
+            // Surface status + body so hosts can distinguish transient 5xx
+            // from "model not found" (404) / "payload too large" (413) /
+            // parameter validation (4xx). Cap at 8 KiB before stringification
+            // so a misbehaving baseURL returning an HTML page can't OOM us.
+            // `String(decoding:as:)` substitutes replacement characters for
+            // invalid UTF-8 so non-UTF-8 bodies aren't silently dropped.
+            let cap = 8 * 1024
+            let bodyData = data.prefix(cap)
+            let body = String(decoding: bodyData, as: UTF8.self)
+            throw EmbeddingError.httpFailure(statusCode: http.statusCode, body: body)
         }
 
         let decoded: OpenAIEmbeddingResponse

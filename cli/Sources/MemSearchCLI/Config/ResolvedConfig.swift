@@ -126,6 +126,24 @@ extension ResolvedConfig {
             guard let u = URL(string: baseURLString), u.scheme != nil else {
                 throw MemSearchError.configurationInvalid("invalid base_url: \(baseURLString)")
             }
+            // Restrict to https — the bearer token in `Authorization` would
+            // be sent in cleartext over plain http. Allow http only when
+            // pointing at localhost/127.0.0.1, which is a common local-dev
+            // pattern (e.g. running an OpenAI-compatible proxy on
+            // http://localhost:8080).
+            let scheme = (u.scheme ?? "").lowercased()
+            let host   = (u.host ?? "").lowercased()
+            let isLocalhost = host == "localhost" || host == "127.0.0.1" || host == "::1"
+            switch scheme {
+            case "https":
+                break
+            case "http" where isLocalhost:
+                break
+            default:
+                throw MemSearchError.configurationInvalid(
+                    "base_url must be https (http only allowed for localhost): \(baseURLString)"
+                )
+            }
             baseURL = u
         } else {
             baseURL = nil

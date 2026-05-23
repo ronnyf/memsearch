@@ -123,4 +123,41 @@ struct HybridSearchTests {
         #expect(ids.contains(ChunkID("in")), "expected the matching-prefix chunk")
         #expect(!ids.contains(ChunkID("out")), "expected the non-matching chunk to be filtered out")
     }
+
+    /// Regression guard for the iter-1 `candidateMultiplier` knob. Floor of
+    /// 50 in `SQLiteHybridSearch` keeps small-topK queries usable even when
+    /// a caller passes `candidateMultiplier=0` — without the floor, the
+    /// SQL `LIMIT 0` would empty both retrievers and RRF would return [].
+    @Test("hybridSearch with candidateMultiplier=0 still returns hits via 50-row floor")
+    func candidateMultiplierFloor() async throws {
+        let dir = try Self.makeTempDir(prefix: "hs-cm")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try await SQLiteVectorStore(
+            url: dir.appendingPathComponent("memsearch.db"),
+            dimension: 8
+        )
+
+        let chunk = Chunk(
+            id: ChunkID("only"),
+            source: URL(fileURLWithPath: "/x.md"),
+            heading: "h", headingLevel: 1,
+            startLine: 1, endLine: 1,
+            content: "hello world",
+            contentHash: ChunkID.contentHash(for: "hello world")
+        )
+        var v = [Float](repeating: 0, count: 8); v[0] = 1
+        _ = try await store.upsert([
+            StoredChunk(chunk: chunk, embedding: try Embedding(values: v, expectedDimension: 8))
+        ])
+
+        let hits = try await store.hybridSearch(HybridQuery(
+            queryText: "hello world",
+            queryEmbedding: try Embedding(values: v, expectedDimension: 8),
+            topK: 1,
+            filter: nil,
+            rrfK: 60,
+            candidateMultiplier: 0   // would produce LIMIT 0 without floor
+        ))
+        #expect(hits.map(\.chunk.id) == [ChunkID("only")])
+    }
 }

@@ -40,10 +40,11 @@ extension SQLiteVectorStore {
         }
         do {
             return try await pool.read { db in
-                // Over-fetch each retriever to give RRF room to fuse — `topK * 5`
-                // tracks the Python sibling's heuristic, with a 50-row floor for
-                // small-topK queries.
-                let candidates = max(q.topK * 5, 50)
+                // Over-fetch each retriever to give RRF room to fuse. The
+                // multiplier is caller-tunable via `HybridQuery`; default 5
+                // tracks the Python sibling. 50-row floor catches small-topK
+                // queries where 5× would starve fusion.
+                let candidates = max(q.topK * q.candidateMultiplier, 50)
                 let qBlob = embeddingBlob(q.queryEmbedding.values)
                 let likePattern = q.filter.map { escapeForLike($0.prefix.path) + "%" }
 

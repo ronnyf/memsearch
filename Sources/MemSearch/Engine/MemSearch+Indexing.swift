@@ -19,8 +19,11 @@ extension MemSearch {
                         do {
                             let event = try await indexOne(url: url, force: force, modelName: embedder.modelName)
                             continuation.yield(event)
-                        } catch is CancellationError {
-                            throw CancellationError()
+                        } catch let cancel as CancellationError {
+                            // Re-throw the original instance so the outer arm
+                            // finishes the stream with the same value (cleaner
+                            // than allocating a fresh `CancellationError()`).
+                            throw cancel
                         } catch let e as EmbeddingError {
                             continuation.yield(.failed(url, .embedding(e)))
                         } catch let e as VectorStoreError {
@@ -45,8 +48,8 @@ extension MemSearch {
                         continuation.yield(.removed(orphan, chunkCount: count))
                     }
                     continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish(throwing: CancellationError())
+                } catch let cancel as CancellationError {
+                    continuation.finish(throwing: cancel)
                 } catch {
                     continuation.finish(throwing: MemSearchEngineErrors.lift(error))
                 }
@@ -73,18 +76,26 @@ extension MemSearch {
             let event = try await indexOne(url: url, force: false, modelName: embedder.modelName)
             if case .indexed(_, let a, _) = event { return a }
             return 0
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let e as EmbeddingError {
-            throw MemSearchError.embedding(e)
-        } catch let e as VectorStoreError {
-            throw MemSearchError.store(e)
         } catch {
-            // Same Sendable-boundary reasoning as indexStream's catch-all.
-            // Unwrap through `LocalizedError` so the SwiftUI alert sees a
-            // readable string, not a raw `"\(error)"` type-name leak.
-            let message = (error as? LocalizedError)?.errorDescription
-                ?? (error as NSError).localizedDescription
+            // Route through `MemSearchEngineErrors.lift` for canonical
+            // mapping — recognised sub-errors become `MemSearchError`
+            // cases, `CancellationError` flows through unchanged, and a
+            // future case added to `lift` (e.g. `LLMError`) is picked up
+            // automatically. Truly unknown errors are wrapped with the URL
+            // so callers know which file failed; rendered through
+            // `LocalizedError` so SwiftUI alerts see a readable string,
+            // not a raw `"\(error)"` type-name leak.
+            //
+            // Note: `indexFile` does NOT mirror `indexStream`'s per-URL
+            // catch arm that yields `IndexFileError`-shaped events. The
+            // event-stream contract surfaces typed sub-errors per file;
+            // the single-throw `indexFile` contract surfaces a single
+            // `MemSearchError` (or `CancellationError`).
+            let lifted = MemSearchEngineErrors.lift(error)
+            if lifted is CancellationError { throw lifted }
+            if let m = lifted as? MemSearchError { throw m }
+            let message = (lifted as? LocalizedError)?.errorDescription
+                ?? (lifted as NSError).localizedDescription
             throw MemSearchError.scan(url, UnknownIndexError(message: message))
         }
     }
