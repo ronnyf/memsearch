@@ -1,0 +1,91 @@
+{
+  "fixture_version": 1,
+  "date": "2026-05-21",
+  "python": {
+    "version": "3.12.11",
+    "memsearch_version": "0.4.3"
+  },
+  "embedder": {
+    "provider": "onnx",
+    "model": "bge-m3",
+    "dimension": 1024,
+    "batch_size": "default",
+    "extra_kwargs": {}
+  },
+  "chunker": {
+    "max_chunk_size": 1500,
+    "overlap_lines": 2,
+    "heading_split": true,
+    "content_hash": "sha256(content).hexdigest()[:16]",
+    "chunk_id": "sha256('markdown:{source}:{start_line}:{end_line}:{content_hash}:{model}').hexdigest()[:16]",
+    "comment": "Phase 1's Swift Chunker mirrors these defaults byte-for-byte."
+  },
+  "corpus": {
+    "path": "corpus/",
+    "file_count": 46
+  },
+  "queries": {
+    "path": "queries.json",
+    "topK": 5,
+    "count": 8
+  },
+  "results": {
+    "path": "python-top5.json",
+    "sha256_path": "python-top5.json.sha256"
+  },
+  "python_pip_freeze": [
+    "PyYAML==6.0.3",
+    "Pygments==2.20.0",
+    "annotated-doc==0.0.4",
+    "annotated-types==0.7.0",
+    "anyio==4.13.0",
+    "cachetools==7.1.3",
+    "certifi==2026.5.20",
+    "charset-normalizer==3.4.7",
+    "click==8.4.0",
+    "distro==1.9.0",
+    "faiss-cpu==1.13.2",
+    "filelock==3.29.0",
+    "flatbuffers==25.12.19",
+    "fsspec==2026.4.0",
+    "grpcio==1.80.0",
+    "h11==0.16.0",
+    "hf-xet==1.5.0",
+    "httpcore==1.0.9",
+    "httpx==0.28.1",
+    "huggingface_hub==1.15.0",
+    "idna==3.15",
+    "jiter==0.15.0",
+    "markdown-it-py==4.2.0",
+    "mdurl==0.1.2",
+    "memsearch==0.4.3",
+    "milvus-lite==3.0",
+    "numpy==2.4.6",
+    "onnxruntime==1.26.0",
+    "openai==2.37.0",
+    "orjson==3.11.9",
+    "packaging==26.2",
+    "pandas==3.0.3",
+    "protobuf==7.35.0",
+    "pyarrow==24.0.0",
+    "pydantic==2.13.4",
+    "pydantic_core==2.46.4",
+    "pymilvus==3.0.0",
+    "python-dateutil==2.9.0.post0",
+    "python-dotenv==1.2.2",
+    "requests==2.34.2",
+    "rich==15.0.0",
+    "setuptools==80.10.2",
+    "shellingham==1.5.4",
+    "six==1.17.0",
+    "sniffio==1.3.1",
+    "tokenizers==0.23.1",
+    "tomli_w==1.2.0",
+    "tqdm==4.67.3",
+    "typer==0.25.1",
+    "typing-inspection==0.4.2",
+    "typing_extensions==4.15.0",
+    "urllib3==2.7.0",
+    "watchdog==6.0.0"
+  ]
+}

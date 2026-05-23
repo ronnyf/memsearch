@@ -228,6 +228,16 @@ public protocol VectorStore: Sendable {
     func chunkIDs(forSource: URL) async throws -> Set<ChunkID>
     func delete(ids: [ChunkID]) async throws -> Int
     func delete(source: URL) async throws -> Int
+
+    /// Snapshot-consistent counts in a single backend round-trip — must be
+    /// computed inside one read transaction so concurrent writers cannot
+    /// produce torn `(sources, chunks)` pairs. SQLite implements this as
+    /// `SELECT COUNT(DISTINCT source), COUNT(*) FROM chunks_meta` inside
+    /// `pool.read`. Loop-2 review surfaced that an N+1 engine-level loop
+    /// over `indexedSources()` + `chunkIDs(forSource:)` raced concurrent
+    /// `indexStream` calls; this protocol method removes the gap.
+    func summary() async throws -> EngineSummary
+
     func close() async
 }
 
@@ -423,7 +433,20 @@ public final class SQLiteVectorStore: VectorStore, Sendable {
     public init(url: URL, dimension: Int) async throws {
         var config = Configuration()
         config.prepareDatabase { db in
-            try db.execute(sql: "SELECT load_extension('vec0')")    // sqlite-vec
+            // Static-linked sqlite-vec. Each pool connection registers vec0
+            // by calling sqlite3_vec_init directly against the connection's
+            // sqlite3* handle — no `SELECT load_extension(…)` is required, so
+            // we don't depend on macOS system SQLite's extension-loading flag
+            // (and the iOS sandbox / load_extension question never arises).
+            var errMsg: UnsafeMutablePointer<CChar>?
+            let rc = sqlite3_vec_init(db.sqliteConnection, &errMsg, nil)
+            if rc != SQLITE_OK {
+                let msg = errMsg.flatMap { String(cString: $0) } ?? "sqlite3_vec_init failed"
+                if errMsg != nil { sqlite3_free(errMsg) }
+                throw VectorStoreError.connectionFailed(
+                    NSError(domain: "sqlite-vec", code: Int(rc),
+                            userInfo: [NSLocalizedDescriptionKey: msg]))
+            }
         }
         self.pool = try DatabasePool(path: url.path, configuration: config)
         self.dimension = dimension
@@ -449,7 +472,10 @@ delivers correct concurrency without an outer actor that would regress to
 single-execution.
 
 `Configuration.prepareDatabase` runs once per connection in the pool;
-`load_extension('vec0')` is the sqlite-vec API at runtime.
+the `sqlite3_vec_init` call registers the `vec0` virtual table and
+sqlite-vec functions on every reader and writer. (Requires
+`import SQLite3` for `SQLITE_OK` / `sqlite3_free`, plus `import SQLiteVec`
+for the static-linked `sqlite3_vec_init` symbol.)
 
 ### `MemSearchSwiftData` — manual ModelActor (no `@ModelActor` macro)
 
@@ -548,28 +574,49 @@ public actor CoreMLEmbedder: EmbeddingProvider {
 ### `FoundationModelsSummarizer` — correct single-flight
 
 `LanguageModelSession` is a `final class`, not an actor — it does not enforce
-mutual exclusion itself; the framework throws
-`LanguageModelSession.GenerationError` on overlapping requests. Loop-1's
-chained-Task pattern had a reentrancy race. The correct pattern: spawn the
-new task **first** with the prior in its closure, then assign to `inFlight`
-*synchronously* on the actor between awaits. `LanguageModelSession` is not
-declared `Sendable`; we keep `respond(to:)` invocation inside an
-actor-isolated method and capture `[weak self]` instead of `[session]`.
+mutual exclusion itself; the framework throws an error on overlapping
+requests. (The exact enum varies by SDK — see "Mapping tables" below.)
+Loop-1's chained-Task pattern had a reentrancy race; Spike 0c (2026-05-20)
+validated three additional corrections beyond Loop-2:
+
+- **`Task<Success, Failure>` is a struct in Swift 6, not a class.** The
+  obvious `if inFlight === task { inFlight = nil }` cleanup the spec
+  originally specified does not compile (`===` is `AnyObject`-only). A
+  monotonic generation counter gives the same "am I still the latest?"
+  semantics.
+- **`LanguageModelSession` accumulates a transcript across `respond` calls.**
+  After ~100 short prompts the transcript exhausts the context window with
+  `GenerationError.exceededContextWindowSize`. Each `summarize(prompt:)` call
+  is logically independent (one-shot summarization of a memory log), so the
+  session is recreated per `callRespond` invocation rather than held for the
+  lifetime of the actor. The actor stores `instructions` and constructs a
+  fresh session inside `callRespond`.
+- **`.concurrentRequests` lives on different error enums by SDK** — see
+  "Mapping tables" below for the dual catch.
+
+The correct pattern: spawn the new task **first** with the prior in its
+closure, then assign to `inFlight` *synchronously* on the actor between
+awaits. `LanguageModelSession` is not declared `Sendable`; we keep
+`respond(to:)` invocation inside an actor-isolated method and capture
+`[weak self]` instead of `[session]`.
 
 ```swift
 @available(macOS 26, iOS 26, visionOS 26, *)
 @available(watchOS, unavailable)
 @available(tvOS, unavailable)
 public actor FoundationModelsSummarizer: LLMSummarizer {
-    private let session: LanguageModelSession
+    private let instructions: String
     private var inFlight: Task<String, Error>?
+    private var generation: UInt64 = 0
 
     public init?(instructions: String) {
         guard SystemLanguageModel.default.isAvailable else { return nil }
-        self.session = LanguageModelSession(instructions: instructions)
+        self.instructions = instructions
     }
 
     public func summarize(prompt: String) async throws -> String {
+        generation &+= 1
+        let myGeneration = generation
         let prior = inFlight
         let task = Task<String, Error> { [weak self] in
             if let prior { _ = try? await prior.value }
@@ -577,14 +624,39 @@ public actor FoundationModelsSummarizer: LLMSummarizer {
             return try await self.callRespond(prompt)
         }
         inFlight = task                    // synchronous on actor — no reentrancy window
-        defer { if inFlight === task { inFlight = nil } }
+        defer {
+            // `defer` runs in actor isolation; clear `inFlight` only if a
+            // concurrent caller hasn't already replaced our task.
+            if myGeneration == generation { inFlight = nil }
+        }
         return try await task.value
     }
 
     private func callRespond(_ prompt: String) async throws -> String {
-        do { return try await session.respond(to: prompt).content }
-        catch let e as LanguageModelSession.GenerationError {
+        // Fresh session per call — avoids transcript accumulation across
+        // `summarize` invocations (Spike 0c finding).
+        let session = LanguageModelSession(instructions: instructions)
+        do {
+            return try await session.respond(to: prompt).content
+        } catch let e as LanguageModelSession.GenerationError {
+            // macOS 26 surface — `.concurrentRequests` lives here, deprecated 27.0.
+            if case .concurrentRequests = e {
+                throw LLMError.singleFlightViolation(e)
+            }
             throw mapGenerationError(e)
+        } catch let e {
+            // macOS 27+ surface — `LanguageModelSession.Error` is the new
+            // home for `.concurrentRequests`. Conditional cast keeps this
+            // compilable under macOS 26 deployment.
+            if #available(macOS 27, iOS 27, visionOS 27, *),
+               let sessionErr = e as? LanguageModelSession.Error
+            {
+                if case .concurrentRequests = sessionErr {
+                    throw LLMError.singleFlightViolation(sessionErr)
+                }
+                throw mapSessionError(sessionErr)
+            }
+            throw e
         }
     }
 }
@@ -616,21 +688,33 @@ public enum LLMError: Error, Sendable {
 
 ### Mapping tables
 
-`LanguageModelSession` exposes **two** error enums; both must be caught:
+`LanguageModelSession` exposes `.concurrentRequests` on **two** different
+error enums depending on SDK; code must catch both:
 
-| `LanguageModelSession.GenerationError`           | `LLMError`                |
-| ------------------------------------------------ | ------------------------- |
-| `.exceededContextWindowSize(_)`                  | `.contextWindowExceeded`  |
-| `.unsupportedLanguageOrLocale(_)`                | `.unsupportedLocale`      |
-| `.rateLimited(_)`                                | `.rateLimited(...)`        |
+- **macOS 26 SDK**: `LanguageModelSession.GenerationError.concurrentRequests(_: Context)` — deprecated in 27.0 with message "Use `LanguageModelSession.Error.concurrentRequests` instead".
+- **macOS 27+ SDK**: `LanguageModelSession.Error.concurrentRequests` (no associated value) — the new home.
+
+| `LanguageModelSession.GenerationError`           | `LLMError`                  |
+| ------------------------------------------------ | --------------------------- |
+| `.exceededContextWindowSize(_)`                  | `.contextWindowExceeded`    |
+| `.unsupportedLanguageOrLocale(_)`                | `.unsupportedLocale`        |
+| `.rateLimited(_)`                                | `.rateLimited(...)`         |
+| `.concurrentRequests(_)` *(macOS 26, deprecated 27.0)* | `.singleFlightViolation(_)` |
 | (everything else)                                | `.modelFailure(...)`        |
 
-| `LanguageModelSession.Error`                     | `LLMError`                  |
+| `LanguageModelSession.Error` *(macOS 27+ only)*  | `LLMError`                  |
 | ------------------------------------------------ | --------------------------- |
 | `.concurrentRequests`                            | `.singleFlightViolation(_)` |
 | (other cases)                                    | `.modelFailure(...)`        |
 
-`callRespond` should have **two catch clauses** (`catch let e as LanguageModelSession.GenerationError` and `catch let e as LanguageModelSession.Error`) so neither enum slips into a generic `catch` and loses its type information.
+`callRespond` catches `LanguageModelSession.GenerationError` directly (it's
+available on the macOS 26 deployment target). The macOS 27+ `LanguageModelSession.Error`
+type can't be used in a typed `catch` clause when the deployment target
+is macOS 26 (the type isn't visible to the compiler yet) — instead, the
+generic `catch let e` clause performs an `if #available(macOS 27, ...)`-guarded
+conditional cast (`e as? LanguageModelSession.Error`). Both paths surface
+`.concurrentRequests` as `LLMError.singleFlightViolation`; tests `#expect`
+zero occurrences over a stress run.
 
 ## File watcher
 
@@ -949,16 +1033,28 @@ package final class MockEmbeddingProvider: EmbeddingProvider {
     package nonisolated let dimension: Int
 
     private let lock = OSAllocatedUnfairLock<State>(initialState: .init())
-    package struct State { var injectedFailures: [String: EmbeddingError] = [:] }
+    package struct State {
+        var injectedFailures: [String: EmbeddingError] = [:]
+        var latencyPerBatch: Duration? = nil
+    }
 
-    package init(dimension: Int = 8, injectedFailures: [String: EmbeddingError] = [:]) {
+    package init(dimension: Int = 8,
+                 injectedFailures: [String: EmbeddingError] = [:],
+                 latencyPerBatch: Duration? = nil) {
         self.dimension = dimension
-        lock.withLock { $0.injectedFailures = injectedFailures }
+        lock.withLock {
+            $0.injectedFailures = injectedFailures
+            $0.latencyPerBatch = latencyPerBatch
+        }
     }
 
     package func embed(_ texts: [String]) async throws -> [Embedding] {
         // Failure keyed on text content — deterministic regardless of arrival order.
-        let failures = lock.withLock { $0.injectedFailures }
+        // `latencyPerBatch` (if set) provides a documented suspension point so
+        // cancellation tests can land at a known point and surface as
+        // `CancellationError`, not as the injected failure.
+        let (failures, latency) = lock.withLock { ($0.injectedFailures, $0.latencyPerBatch) }
+        if let latency { try await Task.sleep(for: latency) }
         if let first = texts.first, let injected = failures[first] {
             throw injected
         }
@@ -1093,8 +1189,13 @@ None blocking. Items deferred to implementation:
 
 - swift-toml vs swift-tomlkit — pick the one with cleaner Swift 6 Sendable
   conformances at impl time.
-- sqlite-vec distribution — SPM binary target if available; otherwise
-  prebuilt static lib via `linkerSettings`.
+- sqlite-vec distribution — **resolved (Spike 0a)**. Maintain a SwiftPM
+  wrapper that compiles upstream `asg017/sqlite-vec`'s `sqlite-vec.c` as
+  a C target with `-DSQLITE_CORE -DSQLITE_VEC_STATIC`; consumer calls
+  `sqlite3_vec_init` directly. Phase 1 decides whether the wrapper lives
+  as (a) a maintained public fork with the Package.swift upstreamed via
+  PR, or (b) a vendored copy under `Sources/SQLiteVec/` inside this repo.
+  Either way: source-link, no binary target, no runtime extension loading.
 - Default Core ML embedding model identifier — see Risks (BGE-M3 fallback).
 - 16-branch CLI compact dispatch — hand-written vs `@CLISubcommand` macro.
 - `AsyncThrowingStream<_, Failure>` typed Failure — narrow streams when
